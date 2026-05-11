@@ -43,7 +43,7 @@ DEFAULT_EMPTY_ROWS = 10
 # ---------------------------------------------------------------------------
 def _empty_rows(n: int = DEFAULT_EMPTY_ROWS) -> pd.DataFrame:
     df = pd.DataFrame({
-        "Selected":    [True] * n,
+        "Selected":    [False] * n,
         "Parameter":   [""] * n,
         "Device ID":   [""] * n,
         "Sample ID":   [""] * n,
@@ -61,7 +61,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
     if not rows:
         return _empty_rows()
     df = pd.DataFrame([{
-        "Selected":    True,
+        "Selected":    False,
         "Parameter":   r.get("parameter") or "",
         "Device ID":   r.get("device_id") or "",
         "Sample ID":   r.get("sample_id") or "",
@@ -81,7 +81,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
 def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     if "Selected" not in df.columns:
         df["Selected"] = False
-    df["Selected"] = df["Selected"].fillna(True).astype(bool)
+    df["Selected"] = df["Selected"].fillna(False).astype(bool)
     for c in ("Parameter", "Device ID", "Sample ID", "Reagent LOT", "Gender"):
         if c not in df.columns:
             df[c] = ""
@@ -356,18 +356,31 @@ def render() -> None:
     # Sidebar filters
     filters = _render_filters(grid_df, all_known)
 
+    # Auto-select rows matching the chosen parameter(s), deselect others
+    chosen_params_set = set(filters.get("parameters") or [])
+    _prev_params_set = set(st.session_state.get("_prev_chosen_params", []))
+    if chosen_params_set != _prev_params_set:
+        st.session_state["_prev_chosen_params"] = list(chosen_params_set)
+        if chosen_params_set:
+            new_sel = grid_df["Parameter"].astype(str).isin(chosen_params_set)
+        else:
+            new_sel = pd.Series(False, index=grid_df.index)
+        if not grid_df["Selected"].equals(new_sel):
+            grid_df["Selected"] = new_sel
+            st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+            db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+            st.rerun()
+
     # Sync: plot exclusions ↔ Selected column in the grid
     _excl_ids = set(str(s) for s in filters.get("plot_exclude", []))
     _prev_excl = set(str(s) for s in st.session_state.get("_prev_plot_exclude", []))
     _need_sync = False
-    # Newly excluded → deselect
     _newly_excluded = _excl_ids - _prev_excl
     if _newly_excluded:
         mask = grid_df["Sample ID"].astype(str).isin(_newly_excluded)
         if mask.any() and grid_df.loc[mask, "Selected"].any():
             grid_df.loc[mask, "Selected"] = False
             _need_sync = True
-    # Newly un-excluded → re-select
     _newly_included = _prev_excl - _excl_ids
     if _newly_included:
         mask = grid_df["Sample ID"].astype(str).isin(_newly_included)
