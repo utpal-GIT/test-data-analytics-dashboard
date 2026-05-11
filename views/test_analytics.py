@@ -584,24 +584,28 @@ def render() -> None:
 
 
 
-    # Sort controls
+    # Sort controls (display-only reorder; original row order is restored
+    # before comparing edits so that sorting never triggers a spurious rerun)
     sortable_cols = [c for c in combined.columns if c != "Status"]
     sc1, sc2, _ = st.columns([2, 2, 5])
     sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
     sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
+    _sort_perm = None
     if sort_col != "(none)":
         ascending = sort_dir == "Ascending"
         try:
-            combined = combined.sort_values(
+            sorted_combined = combined.sort_values(
                 by=sort_col, ascending=ascending,
                 na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
                 if s.dtype == object else s,
-            ).reset_index(drop=True)
+            )
         except Exception:
-            combined = combined.sort_values(
+            sorted_combined = combined.sort_values(
                 by=sort_col, ascending=ascending,
                 na_position="last",
-            ).reset_index(drop=True)
+            )
+        _sort_perm = sorted_combined.index.to_numpy()
+        combined = sorted_combined.reset_index(drop=True)
 
     def _row_style(row):
         if bool(row.get("Out of Detection")):
@@ -652,8 +656,13 @@ def render() -> None:
         st.code(_tb.format_exc())
         edited = combined.copy()
     # Persist input-only edits (use a lenient comparison to avoid
-    # infinite reruns from dtype round-trip differences in the editor)
+    # infinite reruns from dtype round-trip differences in the editor).
+    # If the table was display-sorted, restore original row order first
+    # so that the reorder itself is never treated as an edit.
     input_only = _coerce_dtypes(edited[GRID_INPUT_COLS].copy())
+    if _sort_perm is not None and len(input_only) == len(_sort_perm):
+        inv_perm = np.argsort(_sort_perm)
+        input_only = input_only.iloc[inv_perm].reset_index(drop=True)
     prev = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
     changed = False
     for col in GRID_INPUT_COLS:
