@@ -540,13 +540,23 @@ def render() -> None:
         "Paste from Excel · edit inline · 'Parameter' is auto-detected · "
         "uncheck ✓ to exclude a row from analysis & plots",
     )
-    bcol1, bcol2, bcol3, _ = st.columns([1, 1, 1, 4])
+    bcol1, bcol2, bcol3, bcol4, bcol5, _ = st.columns([1, 1, 1, 1, 1, 2])
     if bcol1.button("➕  Add 10 rows", key="add_rows"):
         st.session_state[GRID_KEY] = pd.concat(
             [grid_df, _empty_rows(10)], ignore_index=True
         )
         st.rerun()
-    if bcol2.button("🗑  Clear selected", key="clear_sel"):
+    if bcol2.button("☑  Select all", key="select_all"):
+        grid_df["Selected"] = True
+        st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        st.rerun()
+    if bcol3.button("☐  Deselect all", key="deselect_all"):
+        grid_df["Selected"] = False
+        st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        st.rerun()
+    if bcol4.button("🗑  Clear selected", key="clear_sel"):
         kept = grid_df[~grid_df["Selected"].fillna(False).astype(bool)].reset_index(drop=True)
         if len(kept) < DEFAULT_EMPTY_ROWS:
             kept = pd.concat([kept, _empty_rows(DEFAULT_EMPTY_ROWS - len(kept))],
@@ -554,7 +564,7 @@ def render() -> None:
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
-    if bcol3.button("🧹  Clear all", key="clear_all"):
+    if bcol5.button("🧹  Clear all", key="clear_all"):
         st.session_state[GRID_KEY] = _empty_rows()
         db.replace_all_samples(user["id"], [])
         st.rerun()
