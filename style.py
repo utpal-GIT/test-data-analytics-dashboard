@@ -841,10 +841,16 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
                 for k, v in fit["coeffs"].items()
             ) + '</div>'
             ar = fit.get("abs_range")
+            cr = fit.get("conc_range")
+            range_parts = []
             if ar:
+                range_parts.append(f'Absorbance: {ar[0]:.4g} – {ar[1]:.4g}')
+            if cr:
+                range_parts.append(f'Concentration: {cr[0]:.4g} – {cr[1]:.4g}')
+            if range_parts:
                 abs_range_note = (
                     f'<div style="font-size:0.78rem;color:#64748B;margin-top:4px">'
-                    f'Valid absorbance range: {ar[0]:.4g} – {ar[1]:.4g}</div>'
+                    f'Valid range — {" · ".join(range_parts)}</div>'
                 )
         try:
             r2_val = float(m["R2"])

@@ -1114,6 +1114,10 @@ def _build_report_pdf(
     if ar:
         coeff_rows.append(["Valid Abs range",
                            f"{ar[0]:.4g} – {ar[1]:.4g}"])
+    cr = fit.get("conc_range")
+    if cr:
+        coeff_rows.append(["Valid Conc range",
+                           f"{cr[0]:.4g} – {cr[1]:.4g}"])
     coeff_tbl = Table(coeff_rows, colWidths=[60 * mm, 110 * mm])
     coeff_tbl.setStyle(table_style)
     elements.append(coeff_tbl)

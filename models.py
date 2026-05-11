@@ -180,15 +180,16 @@ def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
     metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
         np.array([]), np.array([]))
 
-    lo, hi = float(np.min(conc_arr)), float(np.max(conc_arr))
-    if lo == hi:
-        hi = lo + 1.0
-    conc_grid = np.linspace(lo, hi, 200)
+    conc_lo, conc_hi = float(np.min(conc_arr)), float(np.max(conc_arr))
+    if conc_lo == conc_hi:
+        conc_hi = conc_lo + 1.0
+    conc_grid = np.linspace(conc_lo, conc_hi, 200)
     abs_grid = _4pl(conc_grid, A, B, C, D)
     return {
         "name": name, "coeffs": coeffs, "predict": predict,
         "metrics": metrics, "curve": (abs_grid, conc_grid),
         "abs_range": (abs_lo, abs_hi),
+        "conc_range": (conc_lo, conc_hi),
         "success": True, "message": "",
     }
 
@@ -231,15 +232,16 @@ def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
     metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
         np.array([]), np.array([]))
 
-    lo, hi = float(np.min(conc_arr)), float(np.max(conc_arr))
-    if lo == hi:
-        hi = lo + 1.0
-    conc_grid = np.linspace(lo, hi, 200)
+    conc_lo, conc_hi = float(np.min(conc_arr)), float(np.max(conc_arr))
+    if conc_lo == conc_hi:
+        conc_hi = conc_lo + 1.0
+    conc_grid = np.linspace(conc_lo, conc_hi, 200)
     abs_grid = _5pl(conc_grid, A, B, C, D, E)
     return {
         "name": name, "coeffs": coeffs, "predict": predict,
         "metrics": metrics, "curve": (abs_grid, conc_grid),
         "abs_range": (abs_lo, abs_hi),
+        "conc_range": (conc_lo, conc_hi),
         "success": True, "message": "",
     }
 

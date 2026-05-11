@@ -71,15 +71,10 @@ def compute_row_metrics(
         # "In Range" per the user's spec = predicted within CLIA window of actual.
         in_range_col.append(in_clia)
 
-        # Detection range flag (True if actual or predicted fall outside)
+        # Detection range flag (based on actual result only)
         det = (param_cfg or {}).get("detection") or {}
-        out_of_det = False
-        for v in (actual, pred):
-            in_det = in_detection_range(v, det)
-            if in_det is False:
-                out_of_det = True
-                break
-        detect_flag_col.append(out_of_det if det else False)
+        in_det = in_detection_range(actual, det)
+        detect_flag_col.append((in_det is False) if det else False)
 
     out["In Range"] = in_range_col
     out["In CLIA"] = in_clia_col
