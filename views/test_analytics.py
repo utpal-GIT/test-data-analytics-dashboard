@@ -556,6 +556,31 @@ def render() -> None:
         "Paste from Excel · edit inline · 'Parameter' is auto-detected · "
         "uncheck ✓ to exclude a row from analysis & plots",
     )
+
+    # Sort controls rendered BEFORE action buttons so their widget state
+    # is not lost when a button calls st.rerun().
+    sortable_cols = [c for c in combined.columns if c != "Status"]
+    sc1, sc2, _ = st.columns([2, 2, 5])
+    sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
+    sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
+    _sort_perm = None
+    if sort_col != "(none)":
+        ascending = sort_dir == "Ascending"
+        try:
+            sorted_combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
+                if s.dtype == object else s,
+            )
+        except Exception:
+            sorted_combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last",
+            )
+        _sort_perm = sorted_combined.index.to_numpy()
+        combined = sorted_combined.reset_index(drop=True)
+    st.session_state["_sort_perm_cache"] = _sort_perm
+
     bcol1, bcol2, bcol3, bcol4, bcol5, bcol6 = st.columns([1, 1, 1, 1, 1, 1.5])
     if bcol1.button("➕  Add 10 rows", key="add_rows"):
         st.session_state[GRID_KEY] = pd.concat(
@@ -592,32 +617,6 @@ def render() -> None:
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
         st.rerun()
-
-
-
-    # Sort controls (display-only reorder; original row order is restored
-    # before comparing edits so that sorting never triggers a spurious rerun)
-    sortable_cols = [c for c in combined.columns if c != "Status"]
-    sc1, sc2, _ = st.columns([2, 2, 5])
-    sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
-    sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
-    _sort_perm = None
-    if sort_col != "(none)":
-        ascending = sort_dir == "Ascending"
-        try:
-            sorted_combined = combined.sort_values(
-                by=sort_col, ascending=ascending,
-                na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
-                if s.dtype == object else s,
-            )
-        except Exception:
-            sorted_combined = combined.sort_values(
-                by=sort_col, ascending=ascending,
-                na_position="last",
-            )
-        _sort_perm = sorted_combined.index.to_numpy()
-        combined = sorted_combined.reset_index(drop=True)
-    st.session_state["_sort_perm_cache"] = _sort_perm
 
     st.markdown(
         '<div class="row-legend">'
