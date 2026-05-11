@@ -571,16 +571,33 @@ def render() -> None:
 
 
 
+    # Sort controls
+    sortable_cols = [c for c in combined.columns if c != "Status"]
+    sc1, sc2, sc3, _ = st.columns([2, 2, 1, 4])
+    sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
+    sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
+    if sort_col != "(none)":
+        ascending = sort_dir == "Ascending"
+        try:
+            combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
+                if s.dtype == object else s,
+            ).reset_index(drop=True)
+        except Exception:
+            combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last",
+            ).reset_index(drop=True)
+
     def _row_style(row):
-        # Priority: out-of-detection (red) > In CLIA range (green) >
-        #           outside CLIA range but in detection (amber) > default
         if bool(row.get("Out of Detection")):
-            return ["background-color: #FEE2E2"] * len(row)   # red
+            return ["background-color: #FEE2E2"] * len(row)
         ir = row.get("In Range")
         if ir is True:
-            return ["background-color: #DCFCE7"] * len(row)   # green
+            return ["background-color: #DCFCE7"] * len(row)
         if ir is False:
-            return ["background-color: #FEF3C7"] * len(row)   # amber
+            return ["background-color: #FEF3C7"] * len(row)
         return [""] * len(row)
 
     try:
@@ -592,7 +609,6 @@ def render() -> None:
     except (ImportError, AttributeError):
         styled = combined
 
-    # Color-key legend for the row tints
     st.markdown(
         '<div class="row-legend">'
         '<span class="swatch green"></span>In CLIA range'
