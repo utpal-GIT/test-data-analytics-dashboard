@@ -146,12 +146,7 @@ def render_login() -> None:
             ok = st.form_submit_button("Sign in", type="primary",
                                        use_container_width=True)
 
-        st.markdown(
-            '<div class="login-hint">Default admin on first run: '
-            '<b>admin / admin</b>. Change it from the User Management tab '
-            'after signing in.</div>',
-            unsafe_allow_html=True,
-        )
+        pass
 
     if ok:
         success, msg = login(u.strip(), p)
