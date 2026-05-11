@@ -722,16 +722,19 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
             title1 = st.text_input("Title", value="Abs vs Actual", key="chart1_title")
             x1lbl = st.text_input("X-axis", value="Actual", key="chart1_x")
             y1lbl = st.text_input("Y-axis", value="Abs", key="chart1_y")
+            inv1 = st.checkbox("Invert axes", key="chart1_inv")
         with cc2:
             st.markdown("**Passing-Bablok**")
             title2 = st.text_input("Title", value="Passing-Bablok", key="chart2_title")
             x2lbl = st.text_input("X-axis", value="Actual", key="chart2_x")
             y2lbl = st.text_input("Y-axis", value="Predicted", key="chart2_y")
+            inv2 = st.checkbox("Invert axes", key="chart2_inv")
         with cc3:
             st.markdown("**Bland-Altman**")
             title3 = st.text_input("Title", value="Bland-Altman", key="chart3_title")
             x3lbl = st.text_input("X-axis", value="Mean of Actual & Predicted", key="chart3_x")
             y3lbl = st.text_input("Y-axis", value="Predicted − Actual", key="chart3_y")
+            inv3 = st.checkbox("Invert axes", key="chart3_inv")
 
     excl = st.session_state.get("plot_exclude", [])
     if excl:
@@ -779,15 +782,18 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     with c1:
         fig1 = go.Figure()
         ok = np.isfinite(actual) & np.isfinite(abs_v)
-        _add_categorised_scatter(fig1, actual, abs_v, ok)
+        p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
+        _add_categorised_scatter(fig1, p1x, p1y, ok)
         if fit["success"] and len(fit["curve"][0]):
             grid_abs, grid_actual = fit["curve"]
+            cx, cy = (grid_abs, grid_actual) if inv1 else (grid_actual, grid_abs)
             fig1.add_trace(go.Scatter(
-                x=grid_actual, y=grid_abs, mode="lines",
+                x=cx, y=cy, mode="lines",
                 name=f"{fit['name']} fit",
                 line=dict(color=style.PALETTE["accent"], width=2.5),
             ))
-        fig1.update_layout(title=title1, xaxis_title=x1lbl, yaxis_title=y1lbl,
+        lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
+        fig1.update_layout(title=title1, xaxis_title=lbl1x, yaxis_title=lbl1y,
                            **style.plotly_layout())
         st.plotly_chart(fig1, use_container_width=True)
 
@@ -796,7 +802,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         ok2 = np.isfinite(actual) & np.isfinite(pred)
         pb = models.passing_bablok(actual[ok2], pred[ok2])
         fig2 = go.Figure()
-        _add_categorised_scatter(fig2, actual, pred, ok2)
+        p2x, p2y = (pred, actual) if inv2 else (actual, pred)
+        _add_categorised_scatter(fig2, p2x, p2y, ok2)
         if ok2.any():
             lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
             hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
@@ -806,12 +813,14 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
                 line=dict(color=style.PALETTE["muted"], dash="dot"),
             ))
             if np.isfinite(pb["slope"]) and np.isfinite(pb["intercept"]):
+                pb_y = pb["slope"] * grid + pb["intercept"]
+                pbx, pby = (pb_y, grid) if inv2 else (grid, pb_y)
                 fig2.add_trace(go.Scatter(
-                    x=grid, y=pb["slope"] * grid + pb["intercept"],
-                    mode="lines", name="Passing-Bablok fit",
+                    x=pbx, y=pby, mode="lines", name="Passing-Bablok fit",
                     line=dict(color=style.PALETTE["warning"], width=2.5),
                 ))
-        fig2.update_layout(title=title2, xaxis_title=x2lbl, yaxis_title=y2lbl,
+        lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
+        fig2.update_layout(title=title2, xaxis_title=lbl2x, yaxis_title=lbl2y,
                            **style.plotly_layout())
         st.plotly_chart(fig2, use_container_width=True)
 
@@ -823,37 +832,55 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     out_det3 = out_of_det[ok3]
     outside_clia3 = outside_clia[ok3]
     in_clia3 = in_clia[ok3]
+    p3x_ok, p3y_ok = (diffs[in_clia3], means[in_clia3]) if inv3 else (means[in_clia3], diffs[in_clia3])
+    p3x_cl, p3y_cl = (diffs[outside_clia3], means[outside_clia3]) if inv3 else (means[outside_clia3], diffs[outside_clia3])
+    p3x_dt, p3y_dt = (diffs[out_det3], means[out_det3]) if inv3 else (means[out_det3], diffs[out_det3])
     fig3 = go.Figure()
     if in_clia3.any():
         fig3.add_trace(go.Scatter(
-            x=means[in_clia3], y=diffs[in_clia3], mode="markers",
+            x=p3x_ok, y=p3y_ok, mode="markers",
             name="In CLIA range", text=sids3[in_clia3], marker=_mk_ok))
     if outside_clia3.any():
         fig3.add_trace(go.Scatter(
-            x=means[outside_clia3], y=diffs[outside_clia3], mode="markers",
+            x=p3x_cl, y=p3y_cl, mode="markers",
             name="Outside CLIA range", text=sids3[outside_clia3], marker=_mk_clia))
     if out_det3.any():
         fig3.add_trace(go.Scatter(
-            x=means[out_det3], y=diffs[out_det3], mode="markers",
+            x=p3x_dt, y=p3y_dt, mode="markers",
             name="Out of detection", text=sids3[out_det3], marker=_mk_det))
     if len(diffs):
         bias = float(np.mean(diffs))
         sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
         loa_hi = bias + 1.96 * sd
         loa_lo = bias - 1.96 * sd
-        x_lo = float(np.min(means)) if len(means) else 0
-        x_hi = float(np.max(means)) if len(means) else 1
-        if x_lo == x_hi: x_hi = x_lo + 1
-        for y_val, lbl, color in [
-            (bias, f"Bias {bias:.3f}", style.PALETTE["success"]),
-            (loa_hi, f"+1.96 SD {loa_hi:.3f}", style.PALETTE["danger"]),
-            (loa_lo, f"-1.96 SD {loa_lo:.3f}", style.PALETTE["danger"]),
-        ]:
-            fig3.add_trace(go.Scatter(
-                x=[x_lo, x_hi], y=[y_val, y_val], mode="lines",
-                name=lbl, line=dict(color=color, dash="dash", width=2),
-            ))
-    fig3.update_layout(title=title3, xaxis_title=x3lbl, yaxis_title=y3lbl,
+        if inv3:
+            d_lo = float(np.min(diffs)) if len(diffs) else 0
+            d_hi = float(np.max(diffs)) if len(diffs) else 1
+            if d_lo == d_hi: d_hi = d_lo + 1
+            for y_val, lbl, color in [
+                (bias, f"Bias {bias:.3f}", style.PALETTE["success"]),
+                (loa_hi, f"+1.96 SD {loa_hi:.3f}", style.PALETTE["danger"]),
+                (loa_lo, f"-1.96 SD {loa_lo:.3f}", style.PALETTE["danger"]),
+            ]:
+                fig3.add_trace(go.Scatter(
+                    x=[y_val, y_val], y=[d_lo, d_hi], mode="lines",
+                    name=lbl, line=dict(color=color, dash="dash", width=2),
+                ))
+        else:
+            x_lo = float(np.min(means)) if len(means) else 0
+            x_hi = float(np.max(means)) if len(means) else 1
+            if x_lo == x_hi: x_hi = x_lo + 1
+            for y_val, lbl, color in [
+                (bias, f"Bias {bias:.3f}", style.PALETTE["success"]),
+                (loa_hi, f"+1.96 SD {loa_hi:.3f}", style.PALETTE["danger"]),
+                (loa_lo, f"-1.96 SD {loa_lo:.3f}", style.PALETTE["danger"]),
+            ]:
+                fig3.add_trace(go.Scatter(
+                    x=[x_lo, x_hi], y=[y_val, y_val], mode="lines",
+                    name=lbl, line=dict(color=color, dash="dash", width=2),
+                ))
+    lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
+    fig3.update_layout(title=title3, xaxis_title=lbl3x, yaxis_title=lbl3y,
                        **style.plotly_layout(height=460))
     st.plotly_chart(fig3, use_container_width=True)
 
