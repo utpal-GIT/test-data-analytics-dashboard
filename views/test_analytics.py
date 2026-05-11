@@ -596,13 +596,14 @@ def render() -> None:
     computed_cols = [c for c in combined.columns if c not in GRID_INPUT_COLS]
     disabled_cfg = {c: st.column_config.Column(disabled=True)
                     for c in computed_cols}
+    grid_height = min(max(len(combined) * 35 + 50, 200), 800)
     try:
         edited = st.data_editor(
             combined,
             key="multi_editor_v3",
             num_rows="fixed",
             use_container_width=True,
-            height=420,
+            height=grid_height,
             column_config=disabled_cfg,
         )
     except Exception as _exc:
