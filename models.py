@@ -2,12 +2,13 @@
 Calibration models.
 
 Linear models fit Actual = f(Abs) directly.
-4PL / 5PL use the standard immunoassay convention — the inverse logistic
-is fitted directly so that residuals are minimised in the concentration
-domain:
-    Conc = C · ((A − D)/(Abs − D) − 1)^(1/B)          [4PL]
-    Conc = C · (((A − D)/(Abs − D))^(1/E) − 1)^(1/B)  [5PL]
-Absorbance must lie strictly between A and D for a valid prediction.
+4PL / 5PL use the standard immunoassay convention:
+    forward:  Abs = D + (A − D) / (1 + (Conc/C)^B)          [4PL]
+              Abs = D + (A − D) / (1 + (Conc/C)^B)^E        [5PL]
+    inverse:  Conc = C · ((A − D)/(Abs − D) − 1)^(1/B)      [4PL]
+              Conc = C · (((A − D)/(Abs − D))^(1/E) − 1)^(1/B) [5PL]
+The forward curve is fitted via curve_fit; the algebraic inverse is used
+for back-calculation (predict).  Abs must lie strictly between A and D.
 
 Each fit returns a dict with:
     name, coeffs, predict (abs → conc), metrics, curve (abs_grid, conc_grid),
@@ -142,22 +143,9 @@ def _5pl_inverse(y, A, B, C, D, E):
     return result
 
 
-def _4pl_inv_safe(y, A, B, C, D):
-    """Inverse 4PL with large penalty instead of NaN (for curve_fit)."""
-    r = _4pl_inverse(y, A, B, C, D)
-    return np.where(np.isfinite(r), r, 1e8)
-
-
-def _5pl_inv_safe(y, A, B, C, D, E):
-    """Inverse 5PL with large penalty instead of NaN (for curve_fit)."""
-    r = _5pl_inverse(y, A, B, C, D, E)
-    return np.where(np.isfinite(r), r, 1e8)
-
-
 def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
-    """Fit inverse 4PL directly: Conc = f_inv(Abs).
+    """Fit forward Abs = 4PL(Conc), predict via inverse Conc = 4PL⁻¹(Abs).
 
-    Minimises residuals in the concentration domain.
     Absorbance must lie strictly between A and D for a valid prediction.
     """
     name = "4PL Logistic"
@@ -174,8 +162,7 @@ def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
         if C0 == 0:
             C0 = 1.0
         p0 = [A0, 1.0, C0, D0]
-        popt, _ = curve_fit(_4pl_inv_safe, abs_arr, conc_arr,
-                            p0=p0, maxfev=20000)
+        popt, _ = curve_fit(_4pl, conc_arr, abs_arr, p0=p0, maxfev=20000)
         A, B, C, D = popt
         abs_lo, abs_hi = float(min(A, D)), float(max(A, D))
         predict = lambda v, A=A, B=B, C=C, D=D: _4pl_inverse(v, A, B, C, D)
@@ -207,9 +194,8 @@ def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
 
 
 def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
-    """Fit inverse 5PL directly: Conc = f_inv(Abs).
+    """Fit forward Abs = 5PL(Conc), predict via inverse Conc = 5PL⁻¹(Abs).
 
-    Minimises residuals in the concentration domain.
     Absorbance must lie strictly between A and D for a valid prediction.
     """
     name = "5PL Logistic"
@@ -226,8 +212,7 @@ def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
         if C0 == 0:
             C0 = 1.0
         p0 = [A0, 1.0, C0, D0, 1.0]
-        popt, _ = curve_fit(_5pl_inv_safe, abs_arr, conc_arr,
-                            p0=p0, maxfev=40000)
+        popt, _ = curve_fit(_5pl, conc_arr, abs_arr, p0=p0, maxfev=40000)
         A, B, C, D, E = popt
         abs_lo, abs_hi = float(min(A, D)), float(max(A, D))
         predict = lambda v, A=A, B=B, C=C, D=D, E=E: _5pl_inverse(v, A, B, C, D, E)
