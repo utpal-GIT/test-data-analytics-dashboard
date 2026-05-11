@@ -356,16 +356,29 @@ def render() -> None:
     # Sidebar filters
     filters = _render_filters(grid_df, all_known)
 
-    # Sync: plot exclusions → deselect those rows in the grid
-    _excl_ids = filters.get("plot_exclude", [])
-    if _excl_ids:
-        _excl_set = {str(s) for s in _excl_ids}
-        _excl_mask = grid_df["Sample ID"].astype(str).isin(_excl_set)
-        if _excl_mask.any() and grid_df.loc[_excl_mask, "Selected"].any():
-            grid_df.loc[_excl_mask, "Selected"] = False
-            st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-            db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
-            st.rerun()
+    # Sync: plot exclusions ↔ Selected column in the grid
+    _excl_ids = set(str(s) for s in filters.get("plot_exclude", []))
+    _prev_excl = set(str(s) for s in st.session_state.get("_prev_plot_exclude", []))
+    _need_sync = False
+    # Newly excluded → deselect
+    _newly_excluded = _excl_ids - _prev_excl
+    if _newly_excluded:
+        mask = grid_df["Sample ID"].astype(str).isin(_newly_excluded)
+        if mask.any() and grid_df.loc[mask, "Selected"].any():
+            grid_df.loc[mask, "Selected"] = False
+            _need_sync = True
+    # Newly un-excluded → re-select
+    _newly_included = _prev_excl - _excl_ids
+    if _newly_included:
+        mask = grid_df["Sample ID"].astype(str).isin(_newly_included)
+        if mask.any() and not grid_df.loc[mask, "Selected"].all():
+            grid_df.loc[mask, "Selected"] = True
+            _need_sync = True
+    st.session_state["_prev_plot_exclude"] = list(_excl_ids)
+    if _need_sync:
+        st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        st.rerun()
 
     # Build full df + apply filters + Selected mask
     full_df = _grid_to_dataframe_for_metrics(grid_df)
@@ -689,24 +702,43 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     sids = df["sample_id"].astype(str).to_numpy()
     out_of_det = df.get("Out of Detection",
                         pd.Series([False] * len(df))).fillna(False).to_numpy()
+    in_range_raw = df.get("In Range",
+                          pd.Series([None] * len(df)))
+    outside_clia = np.array(
+        [(v is False) for v in in_range_raw], dtype=bool) & ~out_of_det
+    in_clia = ~out_of_det & ~outside_clia
+
+    # Shared marker styles for the three categories
+    _mk_ok = dict(size=9, color=style.PALETTE["primary"],
+                  line=dict(width=1, color="white"))
+    _mk_clia = dict(size=10, color=style.PALETTE["warning"], symbol="diamond",
+                    line=dict(width=1, color="white"))
+    _mk_det = dict(size=11, color=style.PALETTE["danger"], symbol="x")
+
+    def _add_categorised_scatter(fig, x, y, ok_mask):
+        """Add In CLIA / Outside CLIA / Out of detection traces to `fig`."""
+        m_ok = ok_mask & in_clia
+        m_clia = ok_mask & outside_clia
+        m_det = ok_mask & out_of_det
+        if m_ok.any():
+            fig.add_trace(go.Scatter(
+                x=x[m_ok], y=y[m_ok], mode="markers",
+                name="In CLIA range", text=sids[m_ok], marker=_mk_ok))
+        if m_clia.any():
+            fig.add_trace(go.Scatter(
+                x=x[m_clia], y=y[m_clia], mode="markers",
+                name="Outside CLIA range", text=sids[m_clia], marker=_mk_clia))
+        if m_det.any():
+            fig.add_trace(go.Scatter(
+                x=x[m_det], y=y[m_det], mode="markers",
+                name="Out of detection", text=sids[m_det], marker=_mk_det))
 
     c1, c2 = st.columns(2)
     # Plot 1 — Abs vs Actual
     with c1:
         fig1 = go.Figure()
         ok = np.isfinite(actual) & np.isfinite(abs_v)
-        fig1.add_trace(go.Scatter(
-            x=actual[ok & ~out_of_det], y=abs_v[ok & ~out_of_det],
-            mode="markers", name="In detection", text=sids[ok & ~out_of_det],
-            marker=dict(size=9, color=style.PALETTE["primary"],
-                        line=dict(width=1, color="white")),
-        ))
-        if (out_of_det & ok).any():
-            fig1.add_trace(go.Scatter(
-                x=actual[ok & out_of_det], y=abs_v[ok & out_of_det],
-                mode="markers", name="Out of detection", text=sids[ok & out_of_det],
-                marker=dict(size=11, color=style.PALETTE["danger"], symbol="x"),
-            ))
+        _add_categorised_scatter(fig1, actual, abs_v, ok)
         if fit["success"] and len(fit["curve"][0]):
             grid_abs, grid_actual = fit["curve"]
             fig1.add_trace(go.Scatter(
@@ -723,12 +755,7 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         ok2 = np.isfinite(actual) & np.isfinite(pred)
         pb = models.passing_bablok(actual[ok2], pred[ok2])
         fig2 = go.Figure()
-        fig2.add_trace(go.Scatter(
-            x=actual[ok2], y=pred[ok2], mode="markers",
-            name="Sample", text=sids[ok2],
-            marker=dict(size=9, color=style.PALETTE["primary"],
-                        line=dict(width=1, color="white")),
-        ))
+        _add_categorised_scatter(fig2, actual, pred, ok2)
         if ok2.any():
             lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
             hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
@@ -751,12 +778,23 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     ok3 = np.isfinite(actual) & np.isfinite(pred)
     means = (actual[ok3] + pred[ok3]) / 2.0
     diffs = pred[ok3] - actual[ok3]
+    sids3 = sids[ok3]
+    out_det3 = out_of_det[ok3]
+    outside_clia3 = outside_clia[ok3]
+    in_clia3 = in_clia[ok3]
     fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(
-        x=means, y=diffs, mode="markers", name="Sample", text=sids[ok3],
-        marker=dict(size=9, color=style.PALETTE["primary"],
-                    line=dict(width=1, color="white")),
-    ))
+    if in_clia3.any():
+        fig3.add_trace(go.Scatter(
+            x=means[in_clia3], y=diffs[in_clia3], mode="markers",
+            name="In CLIA range", text=sids3[in_clia3], marker=_mk_ok))
+    if outside_clia3.any():
+        fig3.add_trace(go.Scatter(
+            x=means[outside_clia3], y=diffs[outside_clia3], mode="markers",
+            name="Outside CLIA range", text=sids3[outside_clia3], marker=_mk_clia))
+    if out_det3.any():
+        fig3.add_trace(go.Scatter(
+            x=means[out_det3], y=diffs[out_det3], mode="markers",
+            name="Out of detection", text=sids3[out_det3], marker=_mk_det))
     if len(diffs):
         bias = float(np.mean(diffs))
         sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
