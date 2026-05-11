@@ -716,11 +716,13 @@ def _equation_html(name: str, coeffs: dict) -> str:
         return (f'<span class="var">y</span> = {s:.4g} · <span class="var">x</span> '
                 f'{sign} {abs(b):.4g}')
     if "4pl" in nm:
-        return ('<span class="var">y</span> = D + (A − D) / '
-                '(1 + (<span class="var">x</span>/C)<sup>B</sup>)')
+        return ('<span class="var">Conc</span> = C · '
+                '((A − D) / (<span class="var">Abs</span> − D) − 1)'
+                '<sup>1/B</sup>')
     if "5pl" in nm:
-        return ('<span class="var">y</span> = D + (A − D) / '
-                '(1 + (<span class="var">x</span>/C)<sup>B</sup>)<sup>E</sup>')
+        return ('<span class="var">Conc</span> = C · '
+                '(((A − D) / (<span class="var">Abs</span> − D))'
+                '<sup>1/E</sup> − 1)<sup>1/B</sup>')
     return ""
 
 
@@ -831,12 +833,19 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
         equation = _equation_html(fit.get("name",""), fit.get("coeffs",{}))
         # For non-linear models, also show coefficient chips
         coef_chips = ""
+        abs_range_note = ""
         name_l = (fit.get("name") or "").lower()
         if "pl" in name_l:  # 4PL / 5PL
             coef_chips = '<div class="model-coeff-chips">' + "".join(
                 f'<div class="chip"><span>{k.split(" ")[0]}</span><b>{_fmt_v(v)}</b></div>'
                 for k, v in fit["coeffs"].items()
             ) + '</div>'
+            ar = fit.get("abs_range")
+            if ar:
+                abs_range_note = (
+                    f'<div style="font-size:0.78rem;color:#64748B;margin-top:4px">'
+                    f'Valid absorbance range: {ar[0]:.4g} – {ar[1]:.4g}</div>'
+                )
         try:
             r2_val = float(m["R2"])
             r2_pct = max(0.0, min(100.0, r2_val * 100.0))
@@ -859,6 +868,7 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
             <div class="model-title">{fit['name']}</div>
             <div class="model-equation">{equation}</div>
             {coef_chips}
+            {abs_range_note}
           </div>
           <div class="model-col">
             <div class="model-eyebrow">R² · variance explained</div>

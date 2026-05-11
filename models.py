@@ -1,14 +1,17 @@
 """
-Calibration models that fit Actual = f(Abs).
+Calibration models.
+
+Linear models fit Actual = f(Abs) directly.
+4PL / 5PL use the standard immunoassay convention — the inverse logistic
+is fitted directly so that residuals are minimised in the concentration
+domain:
+    Conc = C · ((A − D)/(Abs − D) − 1)^(1/B)          [4PL]
+    Conc = C · (((A − D)/(Abs − D))^(1/E) − 1)^(1/B)  [5PL]
+Absorbance must lie strictly between A and D for a valid prediction.
 
 Each fit returns a dict with:
-    name:        human-readable model name
-    coeffs:      ordered dict of coefficient name -> value
-    predict:     callable(np.ndarray) -> np.ndarray
-    metrics:     dict with R2, RMSE, MAE, N
-    curve:       callable returning (x_grid, y_grid) for plotting
-    success:     bool
-    message:     str (error reason if not success)
+    name, coeffs, predict (abs → conc), metrics, curve (abs_grid, conc_grid),
+    success, message.  4PL/5PL also include abs_range = (lo, hi).
 
 Also includes Passing-Bablok regression (for the method-comparison plot
 between Actual and Predicted, not for the calibration model itself).
@@ -115,65 +118,143 @@ def _5pl(x, A, B, C, D, E):
         return D + (A - D) / np.power(1.0 + np.power(ratio, B), E)
 
 
-def fit_4pl(x: np.ndarray, y: np.ndarray) -> dict:
+def _4pl_inverse(y, A, B, C, D):
+    """Solve 4PL for x (concentration) given y (absorbance).
+    x = C * ((A - D) / (y - D) - 1) ^ (1/B)
+    """
+    y = np.asarray(y, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = (A - D) / (y - D) - 1.0
+        valid = ratio > 0
+        result = np.where(valid, C * np.power(ratio, 1.0 / B), np.nan)
+    return result
+
+
+def _5pl_inverse(y, A, B, C, D, E):
+    """Solve 5PL for x (concentration) given y (absorbance).
+    x = C * (((A - D) / (y - D)) ^ (1/E) - 1) ^ (1/B)
+    """
+    y = np.asarray(y, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        inner = np.power((A - D) / (y - D), 1.0 / E) - 1.0
+        valid = inner > 0
+        result = np.where(valid, C * np.power(inner, 1.0 / B), np.nan)
+    return result
+
+
+def _4pl_inv_safe(y, A, B, C, D):
+    """Inverse 4PL with large penalty instead of NaN (for curve_fit)."""
+    r = _4pl_inverse(y, A, B, C, D)
+    return np.where(np.isfinite(r), r, 1e8)
+
+
+def _5pl_inv_safe(y, A, B, C, D, E):
+    """Inverse 5PL with large penalty instead of NaN (for curve_fit)."""
+    r = _5pl_inverse(y, A, B, C, D, E)
+    return np.where(np.isfinite(r), r, 1e8)
+
+
+def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
+    """Fit inverse 4PL directly: Conc = f_inv(Abs).
+
+    Minimises residuals in the concentration domain.
+    Absorbance must lie strictly between A and D for a valid prediction.
+    """
     name = "4PL Logistic"
-    if len(x) < 4:
+    if len(abs_arr) < 4:
         return _empty(name, "Need at least 4 points for 4PL fit.")
     try:
-        A0 = float(np.min(y))
-        D0 = float(np.max(y))
-        C0 = float(np.median(x[x > 0])) if np.any(x > 0) else float(np.median(x) or 1.0)
+        order = np.argsort(conc_arr)
+        n4 = max(1, len(order) // 4)
+        A0 = float(np.mean(abs_arr[order[:n4]]))
+        D0 = float(np.mean(abs_arr[order[-n4:]]))
+        if abs(A0 - D0) < 1e-12:
+            D0 = A0 + 0.1
+        C0 = float(np.median(conc_arr[conc_arr > 0])) if np.any(conc_arr > 0) else 1.0
         if C0 == 0:
             C0 = 1.0
         p0 = [A0, 1.0, C0, D0]
-        popt, _ = curve_fit(_4pl, x, y, p0=p0, maxfev=20000)
+        popt, _ = curve_fit(_4pl_inv_safe, abs_arr, conc_arr,
+                            p0=p0, maxfev=20000)
         A, B, C, D = popt
-        predict = lambda v, A=A, B=B, C=C, D=D: _4pl(v, A, B, C, D)
+        abs_lo, abs_hi = float(min(A, D)), float(max(A, D))
+        predict = lambda v, A=A, B=B, C=C, D=D: _4pl_inverse(v, A, B, C, D)
         coeffs = OrderedDict([
-            ("A (lower asymptote)", float(A)),
-            ("B (slope)", float(B)),
-            ("C (inflection)", float(C)),
-            ("D (upper asymptote)", float(D)),
+            ("A (min response)", float(A)),
+            ("B (Hill slope)", float(B)),
+            ("C (EC50)", float(C)),
+            ("D (max response)", float(D)),
         ])
     except Exception as exc:
         return _empty(name, f"Fit failed: {exc}")
 
-    y_hat = predict(x)
+    conc_hat = predict(abs_arr)
+    ok = np.isfinite(conc_hat)
+    metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
+        np.array([]), np.array([]))
+
+    lo, hi = float(np.min(conc_arr)), float(np.max(conc_arr))
+    if lo == hi:
+        hi = lo + 1.0
+    conc_grid = np.linspace(lo, hi, 200)
+    abs_grid = _4pl(conc_grid, A, B, C, D)
     return {
         "name": name, "coeffs": coeffs, "predict": predict,
-        "metrics": _metrics(y, y_hat), "curve": _curve(predict, x),
+        "metrics": metrics, "curve": (abs_grid, conc_grid),
+        "abs_range": (abs_lo, abs_hi),
         "success": True, "message": "",
     }
 
 
-def fit_5pl(x: np.ndarray, y: np.ndarray) -> dict:
+def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
+    """Fit inverse 5PL directly: Conc = f_inv(Abs).
+
+    Minimises residuals in the concentration domain.
+    Absorbance must lie strictly between A and D for a valid prediction.
+    """
     name = "5PL Logistic"
-    if len(x) < 5:
+    if len(abs_arr) < 5:
         return _empty(name, "Need at least 5 points for 5PL fit.")
     try:
-        A0 = float(np.min(y))
-        D0 = float(np.max(y))
-        C0 = float(np.median(x[x > 0])) if np.any(x > 0) else float(np.median(x) or 1.0)
+        order = np.argsort(conc_arr)
+        n4 = max(1, len(order) // 4)
+        A0 = float(np.mean(abs_arr[order[:n4]]))
+        D0 = float(np.mean(abs_arr[order[-n4:]]))
+        if abs(A0 - D0) < 1e-12:
+            D0 = A0 + 0.1
+        C0 = float(np.median(conc_arr[conc_arr > 0])) if np.any(conc_arr > 0) else 1.0
         if C0 == 0:
             C0 = 1.0
         p0 = [A0, 1.0, C0, D0, 1.0]
-        popt, _ = curve_fit(_5pl, x, y, p0=p0, maxfev=40000)
+        popt, _ = curve_fit(_5pl_inv_safe, abs_arr, conc_arr,
+                            p0=p0, maxfev=40000)
         A, B, C, D, E = popt
-        predict = lambda v, A=A, B=B, C=C, D=D, E=E: _5pl(v, A, B, C, D, E)
+        abs_lo, abs_hi = float(min(A, D)), float(max(A, D))
+        predict = lambda v, A=A, B=B, C=C, D=D, E=E: _5pl_inverse(v, A, B, C, D, E)
         coeffs = OrderedDict([
-            ("A (lower asymptote)", float(A)),
-            ("B (slope)", float(B)),
-            ("C (inflection)", float(C)),
-            ("D (upper asymptote)", float(D)),
+            ("A (min response)", float(A)),
+            ("B (Hill slope)", float(B)),
+            ("C (EC50)", float(C)),
+            ("D (max response)", float(D)),
             ("E (asymmetry)", float(E)),
         ])
     except Exception as exc:
         return _empty(name, f"Fit failed: {exc}")
 
-    y_hat = predict(x)
+    conc_hat = predict(abs_arr)
+    ok = np.isfinite(conc_hat)
+    metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
+        np.array([]), np.array([]))
+
+    lo, hi = float(np.min(conc_arr)), float(np.max(conc_arr))
+    if lo == hi:
+        hi = lo + 1.0
+    conc_grid = np.linspace(lo, hi, 200)
+    abs_grid = _5pl(conc_grid, A, B, C, D, E)
     return {
         "name": name, "coeffs": coeffs, "predict": predict,
-        "metrics": _metrics(y, y_hat), "curve": _curve(predict, x),
+        "metrics": metrics, "curve": (abs_grid, conc_grid),
+        "abs_range": (abs_lo, abs_hi),
         "success": True, "message": "",
     }
 

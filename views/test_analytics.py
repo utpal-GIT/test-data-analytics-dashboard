@@ -1110,6 +1110,10 @@ def _build_report_pdf(
         coeff_rows = [[k, _fmt(v)] for k, v in coeffs.items()]
     else:
         coeff_rows = [["-", "-"]]
+    ar = fit.get("abs_range")
+    if ar:
+        coeff_rows.append(["Valid Abs range",
+                           f"{ar[0]:.4g} – {ar[1]:.4g}"])
     coeff_tbl = Table(coeff_rows, colWidths=[60 * mm, 110 * mm])
     coeff_tbl.setStyle(table_style)
     elements.append(coeff_tbl)
