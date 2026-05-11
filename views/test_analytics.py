@@ -48,7 +48,7 @@ def _empty_rows(n: int = DEFAULT_EMPTY_ROWS) -> pd.DataFrame:
         "Device ID":   [""] * n,
         "Sample ID":   [""] * n,
         "Reagent LOT": [""] * n,
-        "Date":        pd.Series([pd.NaT] * n, dtype="datetime64[s]"),
+        "Date":        pd.Series([pd.NaT] * n, dtype="datetime64[ns]"),
         "Age":         pd.Series([np.nan] * n, dtype="float64"),
         "Gender":      [""] * n,
         "Actual":      pd.Series([np.nan] * n, dtype="float64"),
@@ -88,7 +88,7 @@ def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].fillna("").astype(str)
     if "Date" not in df.columns:
         df["Date"] = pd.NaT
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.floor("s").astype("datetime64[s]")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").astype("datetime64[ns]")
     for c in ("Age", "Actual", "Abs"):
         if c not in df.columns:
             df[c] = np.nan
@@ -594,17 +594,18 @@ def render() -> None:
     )
 
     computed_cols = [c for c in combined.columns if c not in GRID_INPUT_COLS]
-    disabled_cfg = {c: st.column_config.Column(disabled=True)
-                    for c in computed_cols}
+    col_cfg = {c: st.column_config.Column(disabled=True)
+               for c in computed_cols}
+    col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
     grid_height = min(max(len(combined) * 35 + 50, 200), 800)
     try:
         edited = st.data_editor(
             combined,
-            key="multi_editor_v3",
+            key="multi_editor_v4",
             num_rows="dynamic",
             use_container_width=True,
             height=grid_height,
-            column_config=disabled_cfg,
+            column_config=col_cfg,
         )
     except Exception as _exc:
         import traceback as _tb
