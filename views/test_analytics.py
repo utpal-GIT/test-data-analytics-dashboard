@@ -929,7 +929,6 @@ def _build_report_pdf(
     pb_stats: dict, ba_bias: float, ba_sd: float, ba_n: int,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
-    _ensure_chrome_for_kaleido()
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
@@ -1134,85 +1133,91 @@ def _build_report_pdf(
         ba_tbl.setStyle(table_style)
         elements.append(ba_tbl)
 
-    # ---- Plots ----
+    # ---- Plots (matplotlib — no browser/kaleido dependency) ----
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
     elements.append(PageBreak())
     elements.append(Paragraph("Plots", h2))
     actual = pd.to_numeric(analysis_df["actual"], errors="coerce").to_numpy()
     abs_v  = pd.to_numeric(analysis_df["abs_value"], errors="coerce").to_numpy()
     pred   = pd.to_numeric(analysis_df["Predicted"], errors="coerce").to_numpy()
-    sids   = analysis_df["sample_id"].astype(str).to_numpy()
 
-    def _add_plot_image(fig, caption: str):
-        try:
-            png = fig.to_image(format="png", width=900, height=420, scale=2,
-                               engine="kaleido")
-        except Exception as exc:
-            elements.append(Paragraph(
-                f"<i>(plot could not be rendered: {exc})</i>", body))
-            return
-        img = Image(io.BytesIO(png), width=180 * mm, height=84 * mm)
+    CLR_PRI = "#2563EB"
+    CLR_ACC = "#06B6D4"
+    CLR_WARN = "#D97706"
+    CLR_OK = "#059669"
+    CLR_ERR = "#DC2626"
+
+    def _mpl_to_image(fig_mpl, caption: str):
+        buf_img = io.BytesIO()
+        fig_mpl.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
+        plt.close(fig_mpl)
+        buf_img.seek(0)
+        img = Image(buf_img, width=180 * mm, height=84 * mm)
         elements.append(Paragraph(caption, h3))
         elements.append(img)
         elements.append(Spacer(1, 4 * mm))
 
-    # Plot 1
-    fig1 = go.Figure()
+    # Plot 1 — Abs vs Actual
     ok = np.isfinite(actual) & np.isfinite(abs_v)
-    fig1.add_trace(go.Scatter(x=actual[ok], y=abs_v[ok], mode="markers",
-                              name="Sample", text=sids[ok]))
+    fig1, ax1 = plt.subplots(figsize=(9, 4.2))
+    if ok.any():
+        ax1.scatter(actual[ok], abs_v[ok], s=50, c=CLR_PRI,
+                    edgecolors="white", linewidths=0.6, zorder=3)
     if fit.get("success") and len(fit.get("curve", (None, None))[0]):
         gabs, gact = fit["curve"]
-        fig1.add_trace(go.Scatter(x=gact, y=gabs, mode="lines",
-                                  name=f"{fit['name']} fit"))
-    fig1.update_layout(title="", xaxis_title="Actual", yaxis_title="Abs",
-                       margin=dict(l=40, r=20, t=20, b=40))
-    _add_plot_image(fig1, "Abs vs Actual (with fitted calibration curve)")
+        ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2, label=f"{fit['name']} fit")
+        ax1.legend(fontsize=9)
+    ax1.set_xlabel("Actual"); ax1.set_ylabel("Abs")
+    ax1.grid(True, alpha=0.25)
+    _mpl_to_image(fig1, "Abs vs Actual (with fitted calibration curve)")
 
-    # Plot 2 — PB
+    # Plot 2 — Passing-Bablok
     ok2 = np.isfinite(actual) & np.isfinite(pred)
-    fig2 = go.Figure()
-    fig2.add_trace(go.Scatter(x=actual[ok2], y=pred[ok2], mode="markers",
-                              name="Sample", text=sids[ok2]))
+    fig2, ax2 = plt.subplots(figsize=(9, 4.2))
     if ok2.any():
+        ax2.scatter(actual[ok2], pred[ok2], s=50, c=CLR_PRI,
+                    edgecolors="white", linewidths=0.6, zorder=3)
         lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
         hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
         grid = np.linspace(lo, hi, 100)
-        fig2.add_trace(go.Scatter(x=grid, y=grid, mode="lines",
-                                  name="Identity (y = x)",
-                                  line=dict(dash="dot")))
+        ax2.plot(grid, grid, color="#94A3B8", linestyle=":", linewidth=1.5,
+                 label="Identity (y = x)")
         if np.isfinite(pb_stats.get("slope", float("nan"))):
-            fig2.add_trace(go.Scatter(
-                x=grid, y=pb_stats["slope"] * grid + pb_stats["intercept"],
-                mode="lines", name="Passing-Bablok fit"))
-    fig2.update_layout(title="", xaxis_title="Actual", yaxis_title="Predicted",
-                       margin=dict(l=40, r=20, t=20, b=40))
-    _add_plot_image(fig2, "Passing-Bablok: Actual vs Predicted")
+            ax2.plot(grid, pb_stats["slope"] * grid + pb_stats["intercept"],
+                     color=CLR_WARN, linewidth=2, label="Passing-Bablok fit")
+        ax2.legend(fontsize=9)
+    ax2.set_xlabel("Actual"); ax2.set_ylabel("Predicted")
+    ax2.grid(True, alpha=0.25)
+    _mpl_to_image(fig2, "Passing-Bablok: Actual vs Predicted")
 
     # Plot 3 — Bland-Altman
-    means = (actual[ok2] + pred[ok2]) / 2.0
-    diffs = pred[ok2] - actual[ok2]
-    fig3 = go.Figure()
-    fig3.add_trace(go.Scatter(x=means, y=diffs, mode="markers",
-                              name="Sample", text=sids[ok2]))
-    if len(diffs):
-        bias = float(np.mean(diffs))
-        sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
-        loa_hi = bias + 1.96 * sd
-        loa_lo = bias - 1.96 * sd
-        x_lo = float(np.min(means)) if len(means) else 0
-        x_hi = float(np.max(means)) if len(means) else 1
-        if x_lo == x_hi: x_hi = x_lo + 1
-        for y_val, lbl in [(bias, f"Bias {bias:.3f}"),
-                           (loa_hi, f"+1.96 SD {loa_hi:.3f}"),
-                           (loa_lo, f"-1.96 SD {loa_lo:.3f}")]:
-            fig3.add_trace(go.Scatter(
-                x=[x_lo, x_hi], y=[y_val, y_val], mode="lines",
-                name=lbl, line=dict(dash="dash")))
-    fig3.update_layout(title="",
-                       xaxis_title="Mean of Actual & Predicted",
-                       yaxis_title="Predicted - Actual",
-                       margin=dict(l=40, r=20, t=20, b=40))
-    _add_plot_image(fig3, "Bland-Altman: Predicted - Actual")
+    fig3, ax3 = plt.subplots(figsize=(9, 4.6))
+    if ok2.any():
+        means = (actual[ok2] + pred[ok2]) / 2.0
+        diffs = pred[ok2] - actual[ok2]
+        ax3.scatter(means, diffs, s=50, c=CLR_PRI,
+                    edgecolors="white", linewidths=0.6, zorder=3)
+        if len(diffs):
+            bias = float(np.mean(diffs))
+            sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
+            loa_hi = bias + 1.96 * sd
+            loa_lo = bias - 1.96 * sd
+            x_lo, x_hi = float(np.min(means)), float(np.max(means))
+            if x_lo == x_hi: x_hi = x_lo + 1
+            ax3.axhline(bias, color=CLR_OK, linestyle="--", linewidth=1.5,
+                        label=f"Bias {bias:.3f}")
+            ax3.axhline(loa_hi, color=CLR_ERR, linestyle="--", linewidth=1.5,
+                        label=f"+1.96 SD {loa_hi:.3f}")
+            ax3.axhline(loa_lo, color=CLR_ERR, linestyle="--", linewidth=1.5,
+                        label=f"-1.96 SD {loa_lo:.3f}")
+            ax3.legend(fontsize=9)
+    ax3.set_xlabel("Mean of Actual & Predicted")
+    ax3.set_ylabel("Predicted − Actual")
+    ax3.grid(True, alpha=0.25)
+    _mpl_to_image(fig3, "Bland-Altman: Predicted − Actual")
 
     # ---- Data table ----
     elements.append(PageBreak())
