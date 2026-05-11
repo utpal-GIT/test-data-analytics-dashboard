@@ -356,6 +356,17 @@ def render() -> None:
     # Sidebar filters
     filters = _render_filters(grid_df, all_known)
 
+    # Sync: plot exclusions → deselect those rows in the grid
+    _excl_ids = filters.get("plot_exclude", [])
+    if _excl_ids:
+        _excl_set = {str(s) for s in _excl_ids}
+        _excl_mask = grid_df["Sample ID"].astype(str).isin(_excl_set)
+        if _excl_mask.any() and grid_df.loc[_excl_mask, "Selected"].any():
+            grid_df.loc[_excl_mask, "Selected"] = False
+            st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+            db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+            st.rerun()
+
     # Build full df + apply filters + Selected mask
     full_df = _grid_to_dataframe_for_metrics(grid_df)
     filtered_indices = _apply_filters(full_df, filters)
@@ -818,12 +829,41 @@ def _pb_hypothesis(pb: dict) -> tuple[str, str, bool | None, bool | None]:
             slope_ok, interc_ok)
 
 
+_chrome_ensured = False
+
+def _ensure_chrome_for_kaleido():
+    """Auto-download Chrome for kaleido image export if not already present."""
+    global _chrome_ensured
+    if _chrome_ensured:
+        return
+    _chrome_ensured = True
+    import shutil
+    for name in ("google-chrome", "google-chrome-stable",
+                 "chromium-browser", "chromium"):
+        if shutil.which(name):
+            return
+    import subprocess, sys
+    try:
+        subprocess.run(["plotly_get_chrome"],
+                       capture_output=True, timeout=300)
+    except Exception:
+        try:
+            subprocess.run(
+                [sys.executable, "-c",
+                 "from choreographer import Browser; "
+                 "Browser.find_browser()"],
+                capture_output=True, timeout=300)
+        except Exception:
+            pass
+
+
 def _build_report_pdf(
     param_name: str, param_cfg: dict, counts: dict, diag: dict,
     fit: dict, analysis_df: pd.DataFrame,
     pb_stats: dict, ba_bias: float, ba_sd: float, ba_n: int,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
+    _ensure_chrome_for_kaleido()
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
