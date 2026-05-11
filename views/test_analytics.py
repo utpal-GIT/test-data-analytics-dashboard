@@ -48,7 +48,7 @@ def _empty_rows(n: int = DEFAULT_EMPTY_ROWS) -> pd.DataFrame:
         "Device ID":   [""] * n,
         "Sample ID":   [""] * n,
         "Reagent LOT": [""] * n,
-        "Date":        pd.Series([pd.NaT] * n, dtype="datetime64[ns]"),
+        "Date":        pd.Series([pd.NaT] * n, dtype="datetime64[s]"),
         "Age":         pd.Series([np.nan] * n, dtype="float64"),
         "Gender":      [""] * n,
         "Actual":      pd.Series([np.nan] * n, dtype="float64"),
@@ -88,7 +88,7 @@ def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].fillna("").astype(str)
     if "Date" not in df.columns:
         df["Date"] = pd.NaT
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.floor("s")
     for c in ("Age", "Actual", "Abs"):
         if c not in df.columns:
             df[c] = np.nan
