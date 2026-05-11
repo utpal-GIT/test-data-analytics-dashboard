@@ -35,7 +35,7 @@ GRID_INPUT_COLS = [
 ]
 GRID_KEY = "all_samples_grid"
 
-DEFAULT_EMPTY_ROWS = 10
+DEFAULT_EMPTY_ROWS = 100
 
 
 # ---------------------------------------------------------------------------
