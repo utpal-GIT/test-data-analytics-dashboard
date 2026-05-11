@@ -620,7 +620,7 @@ def render() -> None:
     col_cfg = {c: st.column_config.Column(disabled=True)
                for c in computed_cols}
     col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
-    grid_height = 15 * 35 + 50  # fixed height for ~15 visible rows; rest scroll
+    grid_height = 10 * 35 + 50  # fixed height for ~10 visible rows; rest scroll
     try:
         edited = st.data_editor(
             combined,
