@@ -657,7 +657,6 @@ def render() -> None:
     if changed:
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
-        st.rerun()
 
     # ---- Performance summary (only single param) ----
     if single_param_mode:
