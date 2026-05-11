@@ -35,14 +35,13 @@ GRID_INPUT_COLS = [
 ]
 GRID_KEY = "all_samples_grid"
 
-EMPTY_ROW_BUFFER = 100
-MIN_GRID_ROWS = 100
+INITIAL_EMPTY_ROWS = 5
 
 
 # ---------------------------------------------------------------------------
 # state / dtype helpers
 # ---------------------------------------------------------------------------
-def _empty_rows(n: int = EMPTY_ROW_BUFFER) -> pd.DataFrame:
+def _empty_rows(n: int = INITIAL_EMPTY_ROWS) -> pd.DataFrame:
     df = pd.DataFrame({
         "Selected":    [False] * n,
         "Parameter":   [""] * n,
@@ -73,9 +72,6 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
         "Actual":      r.get("actual"),
         "Abs":         r.get("abs_value"),
     } for r in rows])
-    pad = MIN_GRID_ROWS - len(df)
-    if pad > 0:
-        df = pd.concat([df, _empty_rows(pad)], ignore_index=True)
     return _coerce_dtypes(df)
 
 
@@ -471,11 +467,10 @@ def render() -> None:
     combined["Abs Error%"]       = metrics_df["Abs Error%"].values
     combined["Bias"]             = metrics_df["Bias"].values
 
-    # Internal arrays for status logic (not shown as columns)
+    # Internal arrays for status logic
     _in_range = metrics_df["In Range"].values
     _out_det = metrics_df["Out of Detection"].fillna(False).astype(bool).values
 
-    # Status column: out-of-detection has highest priority
     def _row_status(ir, od):
         if bool(od):
             return "\U0001f534  Out of detection"
@@ -485,6 +480,15 @@ def render() -> None:
             return "\U0001f7e1  Outside CLIA"
         return ""
     combined["Status"] = [_row_status(ir, od) for ir, od in zip(_in_range, _out_det)]
+
+    # Filter out completely empty rows from display (keep data rows only).
+    # The editor's num_rows="dynamic" lets the user add/paste new rows.
+    _data_mask = ~combined[["Parameter", "Device ID", "Sample ID",
+                            "Reagent LOT", "Actual", "Abs"]].apply(
+        lambda r: all(_is_blank(v) for v in r), axis=1,
+    )
+    _display_indices = combined.index[_data_mask].to_numpy()
+    combined = combined.loc[_data_mask].reset_index(drop=True)
     # ---- Export buttons ----
     style.section("Export")
     ec1, ec2 = st.columns(2)
@@ -571,9 +575,6 @@ def render() -> None:
         st.rerun()
     if bcol4.button("🗑  Clear selected", key="clear_sel"):
         kept = grid_df[~grid_df["Selected"].fillna(False).astype(bool)].reset_index(drop=True)
-        pad = MIN_GRID_ROWS - len(kept)
-        if pad > 0:
-            kept = pd.concat([kept, _empty_rows(pad)], ignore_index=True)
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
@@ -633,7 +634,9 @@ def render() -> None:
     col_cfg = {c: st.column_config.Column(disabled=True)
                for c in computed_cols}
     col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
-    grid_height = 10 * 35 + 50  # fixed height for ~10 visible rows; rest scroll
+    _n_display = len(combined)
+    _visible = min(_n_display + 1, 15)
+    grid_height = _visible * 35 + 50
     try:
         edited = st.data_editor(
             combined,
@@ -649,24 +652,27 @@ def render() -> None:
         st.error(f"data_editor failed: {type(_exc).__name__}: {_exc}")
         st.code(_tb.format_exc())
         edited = combined.copy()
-    # Persist input-only edits (use a lenient comparison to avoid
-    # infinite reruns from dtype round-trip differences in the editor).
-    # If the table was display-sorted, restore original row order first
-    # so that the reorder itself is never treated as an edit.
+    # Persist edits. The editor received only data rows (empty rows stripped).
+    # Unsort if needed, then compare with the original data rows to detect
+    # real changes (cell edits, new rows from paste, deleted rows).
     input_only = _coerce_dtypes(edited[GRID_INPUT_COLS].copy())
     if _sort_perm is not None and len(input_only) == len(_sort_perm):
         inv_perm = np.argsort(_sort_perm)
         input_only = input_only.iloc[inv_perm].reset_index(drop=True)
-    prev = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+    prev_data = grid_df.loc[_display_indices, GRID_INPUT_COLS].reset_index(drop=True)
+    prev_data = _coerce_dtypes(prev_data.copy())
     changed = False
-    for col in GRID_INPUT_COLS:
-        try:
-            if not input_only[col].equals(prev[col]):
+    if len(input_only) != len(prev_data):
+        changed = True
+    else:
+        for col in GRID_INPUT_COLS:
+            try:
+                if not input_only[col].equals(prev_data[col]):
+                    changed = True
+                    break
+            except Exception:
                 changed = True
                 break
-        except Exception:
-            changed = True
-            break
     if changed:
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
