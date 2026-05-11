@@ -571,6 +571,25 @@ def render() -> None:
 
 
 
+    # Sort controls
+    sortable_cols = [c for c in combined.columns if c != "Status"]
+    sc1, sc2, _ = st.columns([2, 2, 5])
+    sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
+    sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
+    if sort_col != "(none)":
+        ascending = sort_dir == "Ascending"
+        try:
+            combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
+                if s.dtype == object else s,
+            ).reset_index(drop=True)
+        except Exception:
+            combined = combined.sort_values(
+                by=sort_col, ascending=ascending,
+                na_position="last",
+            ).reset_index(drop=True)
+
     def _row_style(row):
         if bool(row.get("Out of Detection")):
             return ["background-color: #FEE2E2"] * len(row)
