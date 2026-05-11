@@ -88,7 +88,7 @@ def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
         df[c] = df[c].fillna("").astype(str)
     if "Date" not in df.columns:
         df["Date"] = pd.NaT
-    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.floor("s")
+    df["Date"] = pd.to_datetime(df["Date"], errors="coerce").dt.floor("s").astype("datetime64[s]")
     for c in ("Age", "Actual", "Abs"):
         if c not in df.columns:
             df[c] = np.nan
