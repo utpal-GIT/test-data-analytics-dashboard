@@ -339,6 +339,27 @@ def render() -> None:
         st.session_state[GRID_KEY] = _db_to_grid(db.load_all_samples(user["id"]))
 
     grid_df = _coerce_dtypes(st.session_state[GRID_KEY])
+
+    # Pre-apply pending data_editor edits so the analysis below immediately
+    # reflects the latest user interaction (checkbox toggle, cell edit) without
+    # needing a forced st.rerun() that causes a visible page flash.
+    _editor_delta = st.session_state.get("multi_editor_v4")
+    if isinstance(_editor_delta, dict) and _editor_delta.get("edited_rows"):
+        _cached_perm = st.session_state.get("_sort_perm_cache")
+        _pre_snapshot = grid_df[GRID_INPUT_COLS].copy()
+        for _idx_key, _changes in _editor_delta["edited_rows"].items():
+            _di = int(_idx_key)
+            _oi = (int(_cached_perm[_di])
+                   if _cached_perm is not None and _di < len(_cached_perm)
+                   else _di)
+            if 0 <= _oi < len(grid_df):
+                for _col, _val in _changes.items():
+                    if _col in GRID_INPUT_COLS:
+                        grid_df.at[_oi, _col] = _val
+        grid_df = _coerce_dtypes(grid_df)
+        if not _pre_snapshot.equals(grid_df[GRID_INPUT_COLS]):
+            db.replace_all_samples(user["id"], _grid_to_db(grid_df))
+
     st.session_state[GRID_KEY] = grid_df
 
     # Auto-detect parameters: configured + any typed in the grid
@@ -552,7 +573,7 @@ def render() -> None:
         "Paste from Excel · edit inline · 'Parameter' is auto-detected · "
         "uncheck ✓ to exclude a row from analysis & plots",
     )
-    bcol1, bcol2, bcol3, bcol4, bcol5, _ = st.columns([1, 1, 1, 1, 1, 2])
+    bcol1, bcol2, bcol3, bcol4, bcol5, bcol6 = st.columns([1, 1, 1, 1, 1, 1.5])
     if bcol1.button("➕  Add 10 rows", key="add_rows"):
         st.session_state[GRID_KEY] = pd.concat(
             [grid_df, _empty_rows(10)], ignore_index=True
@@ -580,6 +601,17 @@ def render() -> None:
         st.session_state[GRID_KEY] = _empty_rows()
         db.replace_all_samples(user["id"], [])
         st.rerun()
+    _n_ood = int(_out_det.sum())
+    if bcol6.button(
+        f"⚠  Deselect out of detection ({_n_ood})",
+        key="desel_ood",
+        disabled=(_n_ood == 0),
+    ):
+        ood_mask = metrics_df["Out of Detection"].fillna(False).astype(bool)
+        grid_df.loc[ood_mask.values, "Selected"] = False
+        st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        st.rerun()
 
 
 
@@ -605,6 +637,7 @@ def render() -> None:
             )
         _sort_perm = sorted_combined.index.to_numpy()
         combined = sorted_combined.reset_index(drop=True)
+    st.session_state["_sort_perm_cache"] = _sort_perm
 
     st.markdown(
         '<div class="row-legend">'
@@ -657,6 +690,8 @@ def render() -> None:
     if changed:
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
+        if len(input_only) != len(prev):
+            st.rerun()
 
     # ---- Performance summary (only single param) ----
     if single_param_mode:
