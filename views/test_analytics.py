@@ -719,9 +719,9 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         cc1, cc2, cc3 = st.columns(3)
         with cc1:
             st.markdown("**Abs vs Actual**")
-            title1 = st.text_input("Title", value="Abs vs Actual", key="chart1_title")
-            x1lbl = st.text_input("X-axis", value="Actual", key="chart1_x")
-            y1lbl = st.text_input("Y-axis", value="Abs", key="chart1_y")
+            title1 = st.text_input("Title", value="Concentration vs Absorbance", key="chart1_title")
+            x1lbl = st.text_input("X-axis", value="Concentration", key="chart1_x")
+            y1lbl = st.text_input("Y-axis", value="Absorbance", key="chart1_y")
             inv1 = st.checkbox("Invert axes", key="chart1_inv")
         with cc2:
             st.markdown("**Passing-Bablok**")
@@ -1214,9 +1214,9 @@ def _build_report_pdf(
         gabs, gact = fit["curve"]
         ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2, label=f"{fit['name']} fit")
         ax1.legend(fontsize=9)
-    ax1.set_xlabel("Actual"); ax1.set_ylabel("Abs")
+    ax1.set_xlabel("Concentration"); ax1.set_ylabel("Absorbance")
     ax1.grid(True, alpha=0.25)
-    _mpl_to_image(fig1, "Abs vs Actual (with fitted calibration curve)")
+    _mpl_to_image(fig1, "Concentration vs Absorbance (with fitted calibration curve)")
 
     # Plot 2 — Passing-Bablok
     ok2 = np.isfinite(actual) & np.isfinite(pred)
