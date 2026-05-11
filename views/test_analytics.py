@@ -469,22 +469,21 @@ def render() -> None:
     combined["Error%"]           = metrics_df["Error%"].values
     combined["Abs Error%"]       = metrics_df["Abs Error%"].values
     combined["Bias"]             = metrics_df["Bias"].values
-    combined["In Range"]         = metrics_df["In Range"].astype("object").values
-    combined["Out of Detection"] = metrics_df["Out of Detection"].fillna(False).astype(bool).values
 
-    # Status column: a single visible cell that colour-codes the row state.
-    # Canvas-based st.data_editor doesn't render Styler row backgrounds, so
-    # this is the reliable way to surface the state visually in every row.
-    def _row_status(row):
-        if bool(row.get("Out of Detection")):
-            return "🔴  Out of detection"
-        ir = row.get("In Range")
+    # Internal arrays for status logic (not shown as columns)
+    _in_range = metrics_df["In Range"].values
+    _out_det = metrics_df["Out of Detection"].fillna(False).astype(bool).values
+
+    # Status column: out-of-detection has highest priority
+    def _row_status(ir, od):
+        if bool(od):
+            return "\U0001f534  Out of detection"
         if ir is True:
-            return "🟢  In CLIA range"
+            return "\U0001f7e2  In CLIA range"
         if ir is False:
-            return "🟡  Outside CLIA"
+            return "\U0001f7e1  Outside CLIA"
         return ""
-    combined["Status"] = [_row_status(r) for _, r in combined.iterrows()]
+    combined["Status"] = [_row_status(ir, od) for ir, od in zip(_in_range, _out_det)]
     # ---- Export buttons ----
     style.section("Export")
     ec1, ec2 = st.columns(2)
@@ -607,25 +606,6 @@ def render() -> None:
         _sort_perm = sorted_combined.index.to_numpy()
         combined = sorted_combined.reset_index(drop=True)
 
-    def _row_style(row):
-        if bool(row.get("Out of Detection")):
-            return ["background-color: #FEE2E2"] * len(row)
-        ir = row.get("In Range")
-        if ir is True:
-            return ["background-color: #DCFCE7"] * len(row)
-        if ir is False:
-            return ["background-color: #FEF3C7"] * len(row)
-        return [""] * len(row)
-
-    try:
-        styled = (combined.style
-                  .apply(_row_style, axis=1)
-                  .set_properties(**{"text-align": "center"})
-                  .set_table_styles([{"selector": "th",
-                                      "props": [("text-align", "center")]}]))
-    except (ImportError, AttributeError):
-        styled = combined
-
     st.markdown(
         '<div class="row-legend">'
         '<span class="swatch green"></span>In CLIA range'
@@ -649,6 +629,7 @@ def render() -> None:
             use_container_width=True,
             height=grid_height,
             column_config=col_cfg,
+            hide_index=True,
         )
     except Exception as _exc:
         import traceback as _tb
