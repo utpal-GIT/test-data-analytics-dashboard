@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+*.pyo
+app_data.db
+.claude/
+*.bak
