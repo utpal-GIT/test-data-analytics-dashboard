@@ -35,13 +35,13 @@ GRID_INPUT_COLS = [
 ]
 GRID_KEY = "all_samples_grid"
 
-DEFAULT_EMPTY_ROWS = 100
+EMPTY_ROW_BUFFER = 100
 
 
 # ---------------------------------------------------------------------------
 # state / dtype helpers
 # ---------------------------------------------------------------------------
-def _empty_rows(n: int = DEFAULT_EMPTY_ROWS) -> pd.DataFrame:
+def _empty_rows(n: int = EMPTY_ROW_BUFFER) -> pd.DataFrame:
     df = pd.DataFrame({
         "Selected":    [False] * n,
         "Parameter":   [""] * n,
@@ -72,9 +72,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
         "Actual":      r.get("actual"),
         "Abs":         r.get("abs_value"),
     } for r in rows])
-    pad = DEFAULT_EMPTY_ROWS - len(df)
-    if pad > 0:
-        df = pd.concat([df, _empty_rows(pad)], ignore_index=True)
+    df = pd.concat([df, _empty_rows(EMPTY_ROW_BUFFER)], ignore_index=True)
     return _coerce_dtypes(df)
 
 
@@ -591,9 +589,7 @@ def render() -> None:
         st.rerun()
     if bcol4.button("🗑  Clear selected", key="clear_sel"):
         kept = grid_df[~grid_df["Selected"].fillna(False).astype(bool)].reset_index(drop=True)
-        if len(kept) < DEFAULT_EMPTY_ROWS:
-            kept = pd.concat([kept, _empty_rows(DEFAULT_EMPTY_ROWS - len(kept))],
-                             ignore_index=True)
+        kept = pd.concat([kept, _empty_rows(EMPTY_ROW_BUFFER)], ignore_index=True)
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
