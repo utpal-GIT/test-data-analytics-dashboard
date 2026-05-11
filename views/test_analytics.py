@@ -81,7 +81,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
 def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     if "Selected" not in df.columns:
         df["Selected"] = False
-    df["Selected"] = df["Selected"].fillna(False).astype(bool)
+    df["Selected"] = df["Selected"].fillna(True).astype(bool)
     for c in ("Parameter", "Device ID", "Sample ID", "Reagent LOT", "Gender"):
         if c not in df.columns:
             df[c] = ""
@@ -601,7 +601,7 @@ def render() -> None:
         edited = st.data_editor(
             combined,
             key="multi_editor_v3",
-            num_rows="fixed",
+            num_rows="dynamic",
             use_container_width=True,
             height=grid_height,
             column_config=disabled_cfg,
