@@ -447,7 +447,6 @@ def render() -> None:
     if "Out of Detection" in metrics_df.columns:
         metrics_df["Out of Detection"] = (
             metrics_df["Out of Detection"].fillna(False).astype(bool))
-        metrics_df.loc[inactive_mask, "Out of Detection"] = False
 
     # Build analysis_df early so the Export block (which is rendered above the
     # data table) can use it. Empty when no single parameter is selected.
