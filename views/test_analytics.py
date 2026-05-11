@@ -36,6 +36,7 @@ GRID_INPUT_COLS = [
 GRID_KEY = "all_samples_grid"
 
 EMPTY_ROW_BUFFER = 100
+MIN_GRID_ROWS = 100
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +73,9 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
         "Actual":      r.get("actual"),
         "Abs":         r.get("abs_value"),
     } for r in rows])
-    df = pd.concat([df, _empty_rows(EMPTY_ROW_BUFFER)], ignore_index=True)
+    pad = MIN_GRID_ROWS - len(df)
+    if pad > 0:
+        df = pd.concat([df, _empty_rows(pad)], ignore_index=True)
     return _coerce_dtypes(df)
 
 
@@ -337,27 +340,6 @@ def render() -> None:
         st.session_state[GRID_KEY] = _db_to_grid(db.load_all_samples(user["id"]))
 
     grid_df = _coerce_dtypes(st.session_state[GRID_KEY])
-
-    # Pre-apply pending data_editor edits so the analysis below immediately
-    # reflects the latest user interaction (checkbox toggle, cell edit) without
-    # needing a forced st.rerun() that causes a visible page flash.
-    _editor_delta = st.session_state.get("multi_editor_v4")
-    if isinstance(_editor_delta, dict) and _editor_delta.get("edited_rows"):
-        _cached_perm = st.session_state.get("_sort_perm_cache")
-        _pre_snapshot = grid_df[GRID_INPUT_COLS].copy()
-        for _idx_key, _changes in _editor_delta["edited_rows"].items():
-            _di = int(_idx_key)
-            _oi = (int(_cached_perm[_di])
-                   if _cached_perm is not None and _di < len(_cached_perm)
-                   else _di)
-            if 0 <= _oi < len(grid_df):
-                for _col, _val in _changes.items():
-                    if _col in GRID_INPUT_COLS:
-                        grid_df.at[_oi, _col] = _val
-        grid_df = _coerce_dtypes(grid_df)
-        if not _pre_snapshot.equals(grid_df[GRID_INPUT_COLS]):
-            db.replace_all_samples(user["id"], _grid_to_db(grid_df))
-
     st.session_state[GRID_KEY] = grid_df
 
     # Auto-detect parameters: configured + any typed in the grid
@@ -589,7 +571,9 @@ def render() -> None:
         st.rerun()
     if bcol4.button("🗑  Clear selected", key="clear_sel"):
         kept = grid_df[~grid_df["Selected"].fillna(False).astype(bool)].reset_index(drop=True)
-        kept = pd.concat([kept, _empty_rows(EMPTY_ROW_BUFFER)], ignore_index=True)
+        pad = MIN_GRID_ROWS - len(kept)
+        if pad > 0:
+            kept = pd.concat([kept, _empty_rows(pad)], ignore_index=True)
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
@@ -686,8 +670,7 @@ def render() -> None:
     if changed:
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
-        if len(input_only) != len(prev):
-            st.rerun()
+        st.rerun()
 
     # ---- Performance summary (only single param) ----
     if single_param_mode:
