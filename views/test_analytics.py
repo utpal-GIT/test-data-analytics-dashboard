@@ -352,6 +352,10 @@ def render() -> None:
         "Calibration model", models.MODEL_LABELS, key="ta_model"
     )
 
+    # Apply staged plot-exclude changes (must happen BEFORE the widget renders)
+    if "_staged_plot_exclude" in st.session_state:
+        st.session_state["plot_exclude"] = st.session_state.pop("_staged_plot_exclude")
+
     # Sidebar filters
     filters = _render_filters(grid_df, all_known)
 
@@ -591,7 +595,7 @@ def render() -> None:
         st.rerun()
     if bcol2.button("☑  Select all", key="select_all"):
         grid_df["Selected"] = True
-        st.session_state["plot_exclude"] = []
+        st.session_state["_staged_plot_exclude"] = []
         st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
@@ -608,14 +612,14 @@ def render() -> None:
             sid = str(grid_df.at[idx, "Sample ID"]).strip()
             if sid:
                 excl.discard(sid)
-        st.session_state["plot_exclude"] = sorted(excl)
+        st.session_state["_staged_plot_exclude"] = sorted(excl)
         st.session_state["_prev_plot_exclude"] = sorted(excl)
         kept = grid_df[~sel_mask].reset_index(drop=True)
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
     if bcol5.button("🧹  Clear all", key="clear_all"):
-        st.session_state["plot_exclude"] = []
+        st.session_state["_staged_plot_exclude"] = []
         st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _empty_rows()
         db.replace_all_samples(user["id"], [])
@@ -633,7 +637,7 @@ def render() -> None:
             sid = str(grid_df.at[idx, "Sample ID"]).strip()
             if sid:
                 excl.add(sid)
-        st.session_state["plot_exclude"] = sorted(excl)
+        st.session_state["_staged_plot_exclude"] = sorted(excl)
         st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
@@ -707,7 +711,7 @@ def render() -> None:
                         excl.discard(sid)
                     else:
                         excl.add(sid)
-                st.session_state["plot_exclude"] = sorted(excl)
+                st.session_state["_staged_plot_exclude"] = sorted(excl)
                 st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
