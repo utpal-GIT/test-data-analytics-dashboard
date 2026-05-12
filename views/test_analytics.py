@@ -199,6 +199,8 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
                     help="Clear every filter back to its default."):
         for k in FILTER_KEYS:
             st.session_state.pop(k, None)
+        st.session_state.pop("_prev_plot_exclude", None)
+        st.session_state.pop("_prev_chosen_params", None)
         st.rerun()
 
     # ---- Input-column filters ----
@@ -589,6 +591,8 @@ def render() -> None:
         st.rerun()
     if bcol2.button("☑  Select all", key="select_all"):
         grid_df["Selected"] = True
+        st.session_state["plot_exclude"] = []
+        st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
         st.rerun()
@@ -598,11 +602,21 @@ def render() -> None:
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
         st.rerun()
     if bcol4.button("🗑  Clear selected", key="clear_sel"):
-        kept = grid_df[~grid_df["Selected"].fillna(False).astype(bool)].reset_index(drop=True)
+        sel_mask = grid_df["Selected"].fillna(False).astype(bool)
+        excl = set(str(s) for s in st.session_state.get("plot_exclude", []))
+        for idx in grid_df.index[sel_mask]:
+            sid = str(grid_df.at[idx, "Sample ID"]).strip()
+            if sid:
+                excl.discard(sid)
+        st.session_state["plot_exclude"] = sorted(excl)
+        st.session_state["_prev_plot_exclude"] = sorted(excl)
+        kept = grid_df[~sel_mask].reset_index(drop=True)
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
     if bcol5.button("🧹  Clear all", key="clear_all"):
+        st.session_state["plot_exclude"] = []
+        st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _empty_rows()
         db.replace_all_samples(user["id"], [])
         st.rerun()
@@ -614,6 +628,13 @@ def render() -> None:
     ):
         ood_mask = metrics_df["Out of Detection"].fillna(False).astype(bool)
         grid_df.loc[ood_mask.values, "Selected"] = False
+        excl = set(str(s) for s in st.session_state.get("plot_exclude", []))
+        for idx in grid_df.index[ood_mask.values]:
+            sid = str(grid_df.at[idx, "Sample ID"]).strip()
+            if sid:
+                excl.add(sid)
+        st.session_state["plot_exclude"] = sorted(excl)
+        st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
         db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
         st.rerun()
@@ -672,6 +693,22 @@ def render() -> None:
                 changed = True
                 break
     if changed:
+        if len(input_only) == len(prev_data):
+            old_sel = prev_data["Selected"].fillna(False).astype(bool)
+            new_sel = input_only["Selected"].fillna(False).astype(bool)
+            sel_diff = old_sel != new_sel
+            if sel_diff.any():
+                excl = set(str(s) for s in st.session_state.get("plot_exclude", []))
+                for i in input_only.index[sel_diff]:
+                    sid = str(input_only.at[i, "Sample ID"]).strip()
+                    if not sid:
+                        continue
+                    if new_sel.iloc[i]:
+                        excl.discard(sid)
+                    else:
+                        excl.add(sid)
+                st.session_state["plot_exclude"] = sorted(excl)
+                st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = input_only
         db.replace_all_samples(user["id"], _grid_to_db(input_only))
         st.rerun()
