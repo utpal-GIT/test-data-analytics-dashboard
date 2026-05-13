@@ -261,6 +261,14 @@ div[data-testid="stDataFrame"], div[data-testid="stDataEditor"] {{
     overflow: hidden;
 }}
 
+/* Centre-align data-editor cell text (edit inputs & overlay elements) */
+div[data-testid="stDataEditor"] input,
+div[data-testid="stDataEditor"] textarea,
+div[data-testid="stDataEditor"] [role="gridcell"],
+div[data-testid="stDataEditor"] [role="columnheader"] {{
+    text-align: center !important;
+}}
+
 /* tabs */
 .stTabs [data-baseweb="tab-list"] {{
     gap: 4px;
