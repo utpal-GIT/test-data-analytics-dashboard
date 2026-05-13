@@ -1486,6 +1486,8 @@ def _build_report_pdf(
                      colWidths=_data_col_widths)
     data_tbl.setStyle(TableStyle([
         ("FONT", (0, 0), (-1, -1), "Helvetica", 7.5),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
         ("BACKGROUND", (0, 0), (-1, 0), rl.HexColor("#1E3A8A")),
         ("TEXTCOLOR", (0, 0), (-1, 0), rl.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
