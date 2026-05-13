@@ -1092,24 +1092,39 @@ def _build_report_pdf(
     report_table_df: pd.DataFrame | None = None,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
-    from reportlab.lib.pagesizes import A4
+    from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
     from reportlab.lib.units import mm
     from reportlab.lib import colors as rl
     from reportlab.platypus import (
-        SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, Image,
-        PageBreak,
+        BaseDocTemplate, Frame, PageTemplate, NextPageTemplate,
+        Paragraph, Spacer, Table, TableStyle, Image, PageBreak,
     )
     from reportlab.lib.enums import TA_LEFT
 
     buf = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buf, pagesize=A4,
-        leftMargin=14 * mm, rightMargin=14 * mm,
-        topMargin=14 * mm, bottomMargin=14 * mm,
+    _margin = 14 * mm
+    _pw, _ph = A4
+    _lw, _lh = landscape(A4)
+    doc = BaseDocTemplate(
+        buf,
         title=f"Test Analytics Report - {param_name}",
         author="Test Analytics Dashboard",
     )
+    doc.addPageTemplates([
+        PageTemplate(
+            id='portrait',
+            frames=[Frame(_margin, _margin,
+                          _pw - 2 * _margin, _ph - 2 * _margin)],
+            pagesize=A4,
+        ),
+        PageTemplate(
+            id='landscape',
+            frames=[Frame(_margin, _margin,
+                          _lw - 2 * _margin, _lh - 2 * _margin)],
+            pagesize=landscape(A4),
+        ),
+    ])
     base = getSampleStyleSheet()
     title_style = ParagraphStyle("title", parent=base["Title"],
                                  textColor=rl.HexColor("#1E3A8A"),
@@ -1413,6 +1428,7 @@ def _build_report_pdf(
     table_df = table_df.copy()
     table_df["Status"] = table_df.apply(_pdf_status, axis=1)
 
+    elements.append(NextPageTemplate('landscape'))
     elements.append(PageBreak())
     elements.append(Paragraph(f"Data ({len(table_df)} rows)", h2))
     cols_show = ["sample_id", "device_id", "reagent_lot", "date",
@@ -1454,9 +1470,17 @@ def _build_report_pdf(
             else:
                 row.append("" if v is None else str(v))
         rows.append(row)
-    data_tbl = Table(rows, repeatRows=1, hAlign="LEFT")
+    _col_w = {
+        "sample_id": 24, "device_id": 22, "reagent_lot": 22,
+        "date": 19, "age": 10, "gender": 14, "actual": 15,
+        "abs_value": 15, "Predicted": 18, "Error%": 16,
+        "Abs Error%": 16, "Bias": 14, "Status": 24,
+    }
+    _data_col_widths = [_col_w.get(c, 15) * mm for c in cols_show]
+    data_tbl = Table(rows, repeatRows=1, hAlign="CENTER",
+                     colWidths=_data_col_widths)
     data_tbl.setStyle(TableStyle([
-        ("FONT", (0, 0), (-1, -1), "Helvetica", 8),
+        ("FONT", (0, 0), (-1, -1), "Helvetica", 7.5),
         ("BACKGROUND", (0, 0), (-1, 0), rl.HexColor("#1E3A8A")),
         ("TEXTCOLOR", (0, 0), (-1, 0), rl.white),
         ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
