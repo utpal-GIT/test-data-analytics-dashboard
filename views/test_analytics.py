@@ -219,14 +219,14 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     hcol1.markdown("## Filters")
     if hcol2.button("Reset", key="flt_reset", use_container_width=True,
                     help="Clear every filter back to its default."):
-        # Explicitly set every widget key to its default value.
-        # (st.session_state.pop alone is unreliable because Streamlit's
-        # internal widget registry can re-inject the old value.)
-        st.session_state["flt_param"] = all_known_params
-        st.session_state["flt_device"] = devices
-        st.session_state["flt_sample"] = samples
-        st.session_state["flt_lot"] = lots
-        st.session_state["flt_gender"] = gender_buckets
+        # Clear every filter to empty (no selections).
+        # Explicitly set widget keys so Streamlit's internal widget
+        # registry doesn't silently re-inject old values.
+        st.session_state["flt_param"] = []
+        st.session_state["flt_device"] = []
+        st.session_state["flt_sample"] = []
+        st.session_state["flt_lot"] = []
+        st.session_state["flt_gender"] = []
         if d_min is not None:
             st.session_state["flt_date"] = (d_min, d_max)
         else:
