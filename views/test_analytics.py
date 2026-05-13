@@ -193,12 +193,53 @@ FILTER_KEYS = (
 
 def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     sb = st.sidebar
+
+    # Pre-compute option lists (needed by Reset to set explicit defaults)
+    devices = sorted({s for s in grid_df["Device ID"].dropna().astype(str) if s.strip()})
+    samples = sorted({s for s in grid_df["Sample ID"].dropna().astype(str) if s.strip()})
+    lots = sorted({s for s in grid_df["Reagent LOT"].dropna().astype(str) if s.strip()})
+    raw_genders = [s for s in grid_df["Gender"].dropna().astype(str) if s.strip()]
+    gender_buckets = sorted({_canonical_gender(g) for g in raw_genders})
+
+    dates = pd.to_datetime(grid_df["Date"], errors="coerce").dropna()
+    if len(dates) >= 1:
+        d_min, d_max = dates.min().date(), dates.max().date()
+    else:
+        d_min = d_max = None
+
+    ages = pd.to_numeric(grid_df["Age"], errors="coerce").dropna()
+    if len(ages) >= 1:
+        a_min, a_max = float(ages.min()), float(ages.max())
+        if a_min == a_max:
+            a_max = a_min + 1
+    else:
+        a_min = a_max = None
+
     hcol1, hcol2 = sb.columns([2, 1])
     hcol1.markdown("## Filters")
     if hcol2.button("Reset", key="flt_reset", use_container_width=True,
                     help="Clear every filter back to its default."):
-        for k in FILTER_KEYS:
-            st.session_state.pop(k, None)
+        # Explicitly set every widget key to its default value.
+        # (st.session_state.pop alone is unreliable because Streamlit's
+        # internal widget registry can re-inject the old value.)
+        st.session_state["flt_param"] = all_known_params
+        st.session_state["flt_device"] = devices
+        st.session_state["flt_sample"] = samples
+        st.session_state["flt_lot"] = lots
+        st.session_state["flt_gender"] = gender_buckets
+        if d_min is not None:
+            st.session_state["flt_date"] = (d_min, d_max)
+        else:
+            st.session_state.pop("flt_date", None)
+        if a_min is not None:
+            st.session_state["flt_age"] = (a_min, a_max)
+        else:
+            st.session_state.pop("flt_age", None)
+        st.session_state["flt_err_pct"] = (-200.0, 200.0)
+        st.session_state["flt_abs_err"] = (0.0, 200.0)
+        st.session_state["flt_bias"] = (-1000.0, 1000.0)
+        st.session_state["flt_in_range"] = "Any"
+        st.session_state["plot_exclude"] = []
         st.session_state.pop("_prev_plot_exclude", None)
         st.session_state.pop("_prev_chosen_params", None)
         st.rerun()
@@ -211,30 +252,19 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
              "and the report export.",
     )
 
-    devices = sorted({s for s in grid_df["Device ID"].dropna().astype(str) if s.strip()})
-    samples = sorted({s for s in grid_df["Sample ID"].dropna().astype(str) if s.strip()})
-    lots = sorted({s for s in grid_df["Reagent LOT"].dropna().astype(str) if s.strip()})
-    raw_genders = [s for s in grid_df["Gender"].dropna().astype(str) if s.strip()]
-    gender_buckets = sorted({_canonical_gender(g) for g in raw_genders})
-
     pick_dev = sb.multiselect("Device ID", devices, default=devices, key="flt_device")
     pick_samp = sb.multiselect("Sample ID", samples, default=samples, key="flt_sample")
     pick_lot = sb.multiselect("Reagent LOT", lots, default=lots, key="flt_lot")
     pick_gender = sb.multiselect("Gender", gender_buckets, default=gender_buckets,
                                  key="flt_gender")
 
-    dates = pd.to_datetime(grid_df["Date"], errors="coerce").dropna()
-    if len(dates) >= 1:
-        d_min, d_max = dates.min().date(), dates.max().date()
+    if d_min is not None:
         date_range = sb.date_input("Date range", value=(d_min, d_max),
                                    key="flt_date")
     else:
         date_range = None
 
-    ages = pd.to_numeric(grid_df["Age"], errors="coerce").dropna()
-    if len(ages) >= 1:
-        a_min, a_max = float(ages.min()), float(ages.max())
-        if a_min == a_max: a_max = a_min + 1
+    if a_min is not None:
         age_range = sb.slider("Age", a_min, a_max, (a_min, a_max), key="flt_age")
     else:
         age_range = None
