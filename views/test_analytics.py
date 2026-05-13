@@ -993,7 +993,7 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
                 ))
     lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     fig3.update_layout(title=title3, xaxis_title=lbl3x, yaxis_title=lbl3y,
-                       **style.plotly_layout(height=460))
+                       **style.plotly_layout(height=500))
     st.plotly_chart(fig3, use_container_width=True)
 
 
