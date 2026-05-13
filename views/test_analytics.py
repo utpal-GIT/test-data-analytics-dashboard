@@ -665,6 +665,11 @@ def render() -> None:
     computed_cols = [c for c in combined.columns if c not in GRID_INPUT_COLS]
     col_cfg = {c: st.column_config.Column(disabled=True)
                for c in computed_cols}
+    for _nc in ("Predicted", "Error%", "Abs Error%", "Bias"):
+        if _nc in computed_cols:
+            col_cfg[_nc] = st.column_config.NumberColumn(
+                _nc, disabled=True, format="%.2f",
+            )
     col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
     _n_display = len(combined)
     _visible = min(_n_display + 1, 15)
