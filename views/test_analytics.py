@@ -1394,11 +1394,30 @@ def _build_report_pdf(
     table_df = (report_table_df
                 if report_table_df is not None and len(report_table_df)
                 else analysis_df)
+
+    # Compute a Status column from In Range / Out of Detection
+    def _pdf_status(row):
+        od = row.get("Out of Detection")
+        try:
+            od = bool(od)
+        except (TypeError, ValueError):
+            od = False
+        if od:
+            return "Out of detection"
+        ir = row.get("In Range")
+        if ir is True:
+            return "In CLIA range"
+        if ir is False:
+            return "Outside CLIA"
+        return ""
+    table_df = table_df.copy()
+    table_df["Status"] = table_df.apply(_pdf_status, axis=1)
+
     elements.append(PageBreak())
     elements.append(Paragraph(f"Data ({len(table_df)} rows)", h2))
     cols_show = ["sample_id", "device_id", "reagent_lot", "date",
                  "age", "gender", "actual", "abs_value",
-                 "Predicted", "Error%", "Abs Error%", "Bias"]
+                 "Predicted", "Error%", "Abs Error%", "Bias", "Status"]
     cols_show = [c for c in cols_show if c in table_df.columns]
     _col_labels = {
         "sample_id": "Sample ID", "device_id": "Device ID",
@@ -1406,8 +1425,10 @@ def _build_report_pdf(
         "age": "Age", "gender": "Gender", "actual": "Actual",
         "abs_value": "Abs", "Predicted": "Predicted",
         "Error%": "Error %", "Abs Error%": "|Error %|",
-        "Bias": "Bias",
+        "Bias": "Bias", "Status": "Status",
     }
+    # Columns that should be formatted to 2 decimal places
+    _2dp_cols = {"Predicted", "Error%", "Abs Error%", "Bias"}
     headers = [_col_labels.get(c, c) for c in cols_show]
     rows = [headers]
     for _, r in table_df.iterrows():
@@ -1422,6 +1443,12 @@ def _build_report_pdf(
                         row.append(str(v))
                 else:
                     row.append("")
+            elif c in _2dp_cols:
+                try:
+                    f = float(v)
+                    row.append(f"{f:.2f}" if np.isfinite(f) else "-")
+                except (TypeError, ValueError):
+                    row.append("-")
             elif isinstance(v, float):
                 row.append(_fmt(v))
             else:
