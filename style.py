@@ -608,15 +608,15 @@ def _register_template() -> None:
                 tickfont=dict(color=muted, size=11),
                 title=dict(font=dict(color=text, size=12)),
             ),
-            margin=dict(l=20, r=20, t=140, b=40),
+            margin=dict(l=20, r=20, t=50, b=120),
             legend=dict(
                 bgcolor="rgba(255,255,255,0.6)",
                 bordercolor=grid, borderwidth=1,
                 font=dict(color=text, size=11),
                 orientation="h",
-                x=0, xanchor="left",
-                # sits in the top margin, between the title and the chart
-                y=1.14, yanchor="bottom",
+                x=0.5, xanchor="center",
+                # sits below the chart so it never collides with the title
+                y=-0.22, yanchor="top",
             ),
             hoverlabel=dict(
                 bgcolor=PALETTE["surface"], bordercolor=grid,
@@ -630,8 +630,8 @@ def _register_template() -> None:
 
 def plotly_layout(**overrides) -> dict:
     """Return overrides for `fig.update_layout(**plotly_layout(...))`.
-    Top margin reserves space for the title (top) and legend (just under it)."""
-    base = {"height": 480, "margin": dict(l=20, r=20, t=140, b=40)}
+    Compact top margin for title; generous bottom margin for legend."""
+    base = {"height": 520, "margin": dict(l=20, r=20, t=50, b=120)}
     base.update(overrides)
     return base
 
