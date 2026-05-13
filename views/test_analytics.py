@@ -241,7 +241,7 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         st.session_state["flt_in_range"] = "Any"
         st.session_state["plot_exclude"] = []
         st.session_state.pop("_prev_plot_exclude", None)
-        st.session_state.pop("_prev_chosen_params", None)
+        st.session_state.pop("_prev_filter_fp", None)
         st.rerun()
 
     # ---- Input-column filters ----
@@ -389,20 +389,34 @@ def render() -> None:
     # Sidebar filters
     filters = _render_filters(grid_df, all_known)
 
-    # Auto-select rows matching the chosen parameter(s), deselect others
-    chosen_params_set = set(filters.get("parameters") or [])
-    _prev_params_set = set(st.session_state.get("_prev_chosen_params", []))
-    if chosen_params_set != _prev_params_set:
-        st.session_state["_prev_chosen_params"] = list(chosen_params_set)
-        if chosen_params_set:
-            new_sel = grid_df["Parameter"].astype(str).isin(chosen_params_set)
+    # --- Filter → Selected sync ---
+    # When ANY sidebar filter multiselect changes, auto-select matching rows.
+    _filter_fp = (
+        tuple(sorted(str(s) for s in filters.get("parameters", []))),
+        tuple(sorted(str(s) for s in filters.get("device", []))),
+        tuple(sorted(str(s) for s in filters.get("sample", []))),
+        tuple(sorted(str(s) for s in filters.get("lot", []))),
+        tuple(sorted(str(s) for s in filters.get("gender", []))),
+    )
+    _prev_fp = st.session_state.get("_prev_filter_fp")
+    if _filter_fp != _prev_fp:
+        st.session_state["_prev_filter_fp"] = _filter_fp
+        _has_active = any(t for t in _filter_fp)  # any non-empty filter
+        if _has_active:
+            _tmp_df = _grid_to_dataframe_for_metrics(grid_df)
+            _filt_idx = _apply_filters(_tmp_df, filters)
+            new_sel = pd.Series(False, index=grid_df.index)
+            new_sel.loc[_filt_idx] = True
         else:
             new_sel = pd.Series(False, index=grid_df.index)
         if not grid_df["Selected"].equals(new_sel):
             grid_df["Selected"] = new_sel
             st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
             db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
-            st.rerun()
+        # Clear plot exclusions when filter selection changes
+        st.session_state["_staged_plot_exclude"] = []
+        st.session_state["_prev_plot_exclude"] = []
+        st.rerun()
 
     # Sync: plot exclusions ↔ Selected column in the grid
     _excl_ids = set(str(s) for s in filters.get("plot_exclude", []))
