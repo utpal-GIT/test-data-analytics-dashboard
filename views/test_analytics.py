@@ -740,6 +740,124 @@ def render() -> None:
 
 
 # ---------------------------------------------------------------------------
+# scatter encoding helpers (device-shape / lot-color toggles)
+# ---------------------------------------------------------------------------
+_DEVICE_SHAPES = [
+    "circle", "square", "diamond", "triangle-up", "triangle-down",
+    "pentagon", "hexagon", "star", "cross", "hourglass",
+]
+_LOT_COLORS = [
+    "#2563EB", "#DC2626", "#059669", "#D97706", "#7C3AED",
+    "#DB2777", "#0891B2", "#65A30D", "#EA580C", "#4F46E5",
+]
+
+
+def _scatter_traces(
+    x, y, ok_mask, sids, clia_cat, devices, lots,
+    shape_by_device, color_by_lot,
+):
+    """Build go.Scatter traces with optional device-shape / lot-color encoding.
+
+    clia_cat : 1-D str array, each entry one of
+               ``"in_clia"`` | ``"outside_clia"`` | ``"out_det"``.
+    Returns a list of ``go.Scatter`` objects (caller adds them to a Figure).
+    """
+    clia_meta = {
+        "in_clia":      {"color": style.PALETTE["primary"], "symbol": "circle",
+                         "label": "In CLIA range",     "size": 9},
+        "outside_clia": {"color": style.PALETTE["warning"], "symbol": "diamond",
+                         "label": "Outside CLIA range", "size": 10},
+        "out_det":      {"color": style.PALETTE["danger"],  "symbol": "x",
+                         "label": "Out of detection",   "size": 11},
+    }
+    idx = np.where(ok_mask)[0]
+    if len(idx) == 0:
+        return []
+    x, y, sids = x[idx], y[idx], sids[idx]
+    clia_cat = clia_cat[idx]
+    devices, lots = devices[idx], lots[idx]
+
+    u_devs = sorted({d for d in devices if d.strip()}) or [""]
+    u_lots = sorted({l for l in lots if l.strip()}) or [""]
+    dev_shape = {d: _DEVICE_SHAPES[i % len(_DEVICE_SHAPES)]
+                 for i, d in enumerate(u_devs)}
+    lot_color = {l: _LOT_COLORS[i % len(_LOT_COLORS)]
+                 for i, l in enumerate(u_lots)}
+
+    traces = []
+
+    if not shape_by_device and not color_by_lot:
+        # ── Default: group by CLIA status only ──
+        for key, meta in clia_meta.items():
+            m = clia_cat == key
+            if m.any():
+                traces.append(go.Scatter(
+                    x=x[m], y=y[m], mode="markers",
+                    name=meta["label"], text=sids[m],
+                    marker=dict(size=meta["size"], color=meta["color"],
+                                symbol=meta["symbol"],
+                                line=dict(width=1, color="white"))))
+
+    elif shape_by_device and not color_by_lot:
+        # ── Shape = Device, Color = CLIA status ──
+        for dev in u_devs:
+            first = True
+            for key, meta in clia_meta.items():
+                m = (devices == dev) & (clia_cat == key)
+                if not m.any():
+                    continue
+                traces.append(go.Scatter(
+                    x=x[m], y=y[m], mode="markers",
+                    name=f"{dev} · {meta['label']}",
+                    legendgroup=dev,
+                    legendgrouptitle_text=dev if first else None,
+                    text=sids[m],
+                    marker=dict(size=meta["size"], color=meta["color"],
+                                symbol=dev_shape.get(dev, "circle"),
+                                line=dict(width=1, color="white"))))
+                first = False
+
+    elif color_by_lot and not shape_by_device:
+        # ── Color = LOT, Shape = CLIA status ──
+        for lot in u_lots:
+            first = True
+            for key, meta in clia_meta.items():
+                m = (lots == lot) & (clia_cat == key)
+                if not m.any():
+                    continue
+                traces.append(go.Scatter(
+                    x=x[m], y=y[m], mode="markers",
+                    name=f"{lot} · {meta['label']}",
+                    legendgroup=lot,
+                    legendgrouptitle_text=lot if first else None,
+                    text=sids[m],
+                    marker=dict(size=meta["size"], color=lot_color.get(lot, "#2563EB"),
+                                symbol=meta["symbol"],
+                                line=dict(width=1, color="white"))))
+                first = False
+
+    else:
+        # ── Both: Shape = Device, Fill = LOT, Border = CLIA status ──
+        for dev in u_devs:
+            for lot in u_lots:
+                m = (devices == dev) & (lots == lot)
+                if not m.any():
+                    continue
+                borders = [clia_meta[c]["color"] for c in clia_cat[m]]
+                traces.append(go.Scatter(
+                    x=x[m], y=y[m], mode="markers",
+                    name=f"{dev} / {lot}",
+                    text=sids[m],
+                    marker=dict(
+                        size=10,
+                        color=lot_color.get(lot, "#2563EB"),
+                        symbol=dev_shape.get(dev, "circle"),
+                        line=dict(width=2.5, color=borders))))
+
+    return traces
+
+
+# ---------------------------------------------------------------------------
 # charts (PB + BA stats panel + collapsible customizer + 3 plots)
 # ---------------------------------------------------------------------------
 def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
@@ -792,38 +910,38 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     abs_v = pd.to_numeric(df["abs_value"], errors="coerce").to_numpy()
     pred = pd.to_numeric(df["Predicted"], errors="coerce").to_numpy()
     sids = df["sample_id"].astype(str).to_numpy()
+    devices = df["device_id"].astype(str).fillna("").to_numpy()
+    lots = df["reagent_lot"].astype(str).fillna("").to_numpy()
     out_of_det = df.get("Out of Detection",
                         pd.Series([False] * len(df))).fillna(False).to_numpy()
     in_range_raw = df.get("In Range",
                           pd.Series([None] * len(df)))
     outside_clia = np.array(
         [(v is False) for v in in_range_raw], dtype=bool) & ~out_of_det
-    in_clia = ~out_of_det & ~outside_clia
 
-    # Shared marker styles for the three categories
-    _mk_ok = dict(size=9, color=style.PALETTE["primary"],
-                  line=dict(width=1, color="white"))
-    _mk_clia = dict(size=10, color=style.PALETTE["warning"], symbol="diamond",
-                    line=dict(width=1, color="white"))
-    _mk_det = dict(size=11, color=style.PALETTE["danger"], symbol="x")
+    clia_cat = np.where(out_of_det, "out_det",
+                        np.where(outside_clia, "outside_clia", "in_clia"))
 
-    def _add_categorised_scatter(fig, x, y, ok_mask):
-        """Add In CLIA / Outside CLIA / Out of detection traces to `fig`."""
-        m_ok = ok_mask & in_clia
-        m_clia = ok_mask & outside_clia
-        m_det = ok_mask & out_of_det
-        if m_ok.any():
-            fig.add_trace(go.Scatter(
-                x=x[m_ok], y=y[m_ok], mode="markers",
-                name="In CLIA range", text=sids[m_ok], marker=_mk_ok))
-        if m_clia.any():
-            fig.add_trace(go.Scatter(
-                x=x[m_clia], y=y[m_clia], mode="markers",
-                name="Outside CLIA range", text=sids[m_clia], marker=_mk_clia))
-        if m_det.any():
-            fig.add_trace(go.Scatter(
-                x=x[m_det], y=y[m_det], mode="markers",
-                name="Out of detection", text=sids[m_det], marker=_mk_det))
+    # Encoding toggles (only useful when >1 device or >1 lot in data)
+    _n_devs = len({d for d in devices if d.strip()})
+    _n_lots = len({l for l in lots if l.strip()})
+    tc1, tc2, _ = st.columns([1.5, 1.5, 4])
+    shape_by_device = (
+        tc1.toggle(f"Shape by Device ID ({_n_devs})",
+                   key="toggle_device_shape")
+        if _n_devs >= 2 else False
+    )
+    color_by_lot = (
+        tc2.toggle(f"Color by Reagent LOT ({_n_lots})",
+                   key="toggle_lot_color")
+        if _n_lots >= 2 else False
+    )
+    if shape_by_device and color_by_lot:
+        st.caption(
+            "\U0001f535 Border = In CLIA range  ·  "
+            "\U0001f7e1 Border = Outside CLIA  ·  "
+            "\U0001f534 Border = Out of detection"
+        )
 
     c1, c2 = st.columns(2)
     # Plot 1 — Abs vs Actual
@@ -831,7 +949,10 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         fig1 = go.Figure()
         ok = np.isfinite(actual) & np.isfinite(abs_v)
         p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
-        _add_categorised_scatter(fig1, p1x, p1y, ok)
+        for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat,
+                                 devices, lots,
+                                 shape_by_device, color_by_lot):
+            fig1.add_trace(t)
         if fit["success"] and len(fit["curve"][0]):
             grid_abs, grid_actual = fit["curve"]
             cx, cy = (grid_abs, grid_actual) if inv1 else (grid_actual, grid_abs)
@@ -851,7 +972,10 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         pb = models.passing_bablok(actual[ok2], pred[ok2])
         fig2 = go.Figure()
         p2x, p2y = (pred, actual) if inv2 else (actual, pred)
-        _add_categorised_scatter(fig2, p2x, p2y, ok2)
+        for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat,
+                                 devices, lots,
+                                 shape_by_device, color_by_lot):
+            fig2.add_trace(t)
         if ok2.any():
             lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
             hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
@@ -876,26 +1000,14 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     ok3 = np.isfinite(actual) & np.isfinite(pred)
     means = (actual[ok3] + pred[ok3]) / 2.0
     diffs = pred[ok3] - actual[ok3]
-    sids3 = sids[ok3]
-    out_det3 = out_of_det[ok3]
-    outside_clia3 = outside_clia[ok3]
-    in_clia3 = in_clia[ok3]
-    p3x_ok, p3y_ok = (diffs[in_clia3], means[in_clia3]) if inv3 else (means[in_clia3], diffs[in_clia3])
-    p3x_cl, p3y_cl = (diffs[outside_clia3], means[outside_clia3]) if inv3 else (means[outside_clia3], diffs[outside_clia3])
-    p3x_dt, p3y_dt = (diffs[out_det3], means[out_det3]) if inv3 else (means[out_det3], diffs[out_det3])
+    p3x, p3y = (diffs, means) if inv3 else (means, diffs)
     fig3 = go.Figure()
-    if in_clia3.any():
-        fig3.add_trace(go.Scatter(
-            x=p3x_ok, y=p3y_ok, mode="markers",
-            name="In CLIA range", text=sids3[in_clia3], marker=_mk_ok))
-    if outside_clia3.any():
-        fig3.add_trace(go.Scatter(
-            x=p3x_cl, y=p3y_cl, mode="markers",
-            name="Outside CLIA range", text=sids3[outside_clia3], marker=_mk_clia))
-    if out_det3.any():
-        fig3.add_trace(go.Scatter(
-            x=p3x_dt, y=p3y_dt, mode="markers",
-            name="Out of detection", text=sids3[out_det3], marker=_mk_det))
+    for t in _scatter_traces(p3x, p3y,
+                             np.ones(len(p3x), dtype=bool),
+                             sids[ok3], clia_cat[ok3],
+                             devices[ok3], lots[ok3],
+                             shape_by_device, color_by_lot):
+        fig3.add_trace(t)
     if len(diffs):
         bias = float(np.mean(diffs))
         sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
