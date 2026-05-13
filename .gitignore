@@ -4,3 +4,4 @@ __pycache__/
 app_data.db
 .claude/
 *.bak
+.streamlit/secrets.toml

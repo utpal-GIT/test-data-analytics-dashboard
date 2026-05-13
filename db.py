@@ -13,12 +13,15 @@ Tables:
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable
+
+import streamlit as st
 
 DB_PATH = Path(__file__).parent / "app_data.db"
 
@@ -88,9 +91,11 @@ def init_db() -> None:
         # seed default admin if no users exist
         cur = c.execute("SELECT COUNT(*) AS n FROM users")
         if cur.fetchone()["n"] == 0:
+            admin_user = st.secrets.get("admin_username", "admin")
+            admin_pass = st.secrets.get("admin_password", "admin")
             c.execute(
                 "INSERT INTO users(username, password, role) VALUES (?,?,?)",
-                ("admin", "admin", "admin"),
+                (admin_user, admin_pass, "admin"),
             )
 
 
