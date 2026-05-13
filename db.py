@@ -88,15 +88,49 @@ def init_db() -> None:
             );
             """
         )
-        # seed default admin if no users exist
-        cur = c.execute("SELECT COUNT(*) AS n FROM users")
-        if cur.fetchone()["n"] == 0:
-            admin_user = st.secrets.get("admin_username", "admin")
-            admin_pass = st.secrets.get("admin_password", "admin")
-            c.execute(
-                "INSERT INTO users(username, password, role) VALUES (?,?,?)",
-                (admin_user, admin_pass, "admin"),
-            )
+        # Sync users from st.secrets on every startup.
+        # This ensures credentials survive Streamlit Cloud container restarts
+        # (the ephemeral filesystem wipes app_data.db each time).
+        #
+        # Secrets format:
+        #   [users.admin]
+        #   password = "secure-pass"
+        #   role = "admin"
+        #
+        #   [users.analyst1]
+        #   password = "their-pass"
+        #   role = "user"
+        _secrets_users = dict(st.secrets.get("users", {}))
+        if _secrets_users:
+            for uname, ucfg in _secrets_users.items():
+                uname = str(uname)
+                upwd = str(ucfg.get("password", ""))
+                urole = str(ucfg.get("role", "user"))
+                if not upwd:
+                    continue
+                existing = c.execute(
+                    "SELECT id FROM users WHERE username = ?", (uname,)
+                ).fetchone()
+                if existing:
+                    c.execute(
+                        "UPDATE users SET password=?, role=? WHERE id=?",
+                        (upwd, urole, existing["id"]),
+                    )
+                else:
+                    c.execute(
+                        "INSERT INTO users(username, password, role) "
+                        "VALUES (?,?,?)",
+                        (uname, upwd, urole),
+                    )
+        else:
+            # Fallback: seed a default admin if no secrets and no users exist
+            cur = c.execute("SELECT COUNT(*) AS n FROM users")
+            if cur.fetchone()["n"] == 0:
+                c.execute(
+                    "INSERT INTO users(username, password, role) "
+                    "VALUES (?,?,?)",
+                    ("admin", "admin", "admin"),
+                )
 
 
 # ---------------------------------------------------------------------------
