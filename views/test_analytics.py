@@ -435,6 +435,14 @@ def render() -> None:
     # Compute row-level metrics for ALL rows; then blank out non-active
     metrics_df = M.compute_row_metrics(full_df, fit["predict"], param_cfg or {})
 
+    # Save ALL selected rows for the parameter (before computed-filter blanking)
+    # so the PDF report prints the complete table, not just the filtered subset.
+    if single_param_mode:
+        _all_sel_param_idx = param_rows_idx.intersection(selected_idx)
+        report_table_df = metrics_df.loc[_all_sel_param_idx].reset_index(drop=True)
+    else:
+        report_table_df = pd.DataFrame()
+
     # Refine the active subset by the computed-column filters (only meaningful
     # in single-param mode where Predicted etc. are real numbers).
     if single_param_mode:
@@ -529,6 +537,7 @@ def render() -> None:
                 st.session_state[pdf_key] = _build_report_pdf(
                     chosen_name, param_cfg or {}, counts, diag, fit,
                     analysis_df, pb_stats, ba_bias, ba_sd, ba_n,
+                    report_table_df,
                 )
             except ImportError:
                 st.warning(
@@ -1080,6 +1089,7 @@ def _build_report_pdf(
     param_name: str, param_cfg: dict, counts: dict, diag: dict,
     fit: dict, analysis_df: pd.DataFrame,
     pb_stats: dict, ba_bias: float, ba_sd: float, ba_n: int,
+    report_table_df: pd.DataFrame | None = None,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
     from reportlab.lib.pagesizes import A4
@@ -1380,23 +1390,39 @@ def _build_report_pdf(
     ax3.grid(True, alpha=0.25)
     _mpl_to_image(fig3, "Bland-Altman: Predicted − Actual")
 
-    # ---- Data table ----
+    # ---- Data table (all selected rows, not just filtered) ----
+    table_df = (report_table_df
+                if report_table_df is not None and len(report_table_df)
+                else analysis_df)
     elements.append(PageBreak())
-    elements.append(Paragraph(f"Data ({len(analysis_df)} rows)", h2))
-    cols_show = ["sample_id", "device_id", "reagent_lot", "actual",
-                 "abs_value", "Predicted", "Error%", "Bias"]
-    cols_show = [c for c in cols_show if c in analysis_df.columns]
-    headers = [{"sample_id": "Sample ID", "device_id": "Device ID",
-                "reagent_lot": "Reagent LOT", "actual": "Actual",
-                "abs_value": "Abs", "Predicted": "Predicted",
-                "Error%": "Error %", "Bias": "Bias"}.get(c, c)
-               for c in cols_show]
+    elements.append(Paragraph(f"Data ({len(table_df)} rows)", h2))
+    cols_show = ["sample_id", "device_id", "reagent_lot", "date",
+                 "age", "gender", "actual", "abs_value",
+                 "Predicted", "Error%", "Abs Error%", "Bias"]
+    cols_show = [c for c in cols_show if c in table_df.columns]
+    _col_labels = {
+        "sample_id": "Sample ID", "device_id": "Device ID",
+        "reagent_lot": "Reagent LOT", "date": "Date",
+        "age": "Age", "gender": "Gender", "actual": "Actual",
+        "abs_value": "Abs", "Predicted": "Predicted",
+        "Error%": "Error %", "Abs Error%": "|Error %|",
+        "Bias": "Bias",
+    }
+    headers = [_col_labels.get(c, c) for c in cols_show]
     rows = [headers]
-    for _, r in analysis_df.iterrows():
+    for _, r in table_df.iterrows():
         row = []
         for c in cols_show:
             v = r.get(c)
-            if isinstance(v, float):
+            if c == "date":
+                if pd.notna(v):
+                    try:
+                        row.append(pd.Timestamp(v).strftime("%Y-%m-%d"))
+                    except Exception:
+                        row.append(str(v))
+                else:
+                    row.append("")
+            elif isinstance(v, float):
                 row.append(_fmt(v))
             else:
                 row.append("" if v is None else str(v))
