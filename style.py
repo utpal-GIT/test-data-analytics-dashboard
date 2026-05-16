@@ -844,8 +844,13 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
         abs_range_note = ""
         name_l = (fit.get("name") or "").lower()
         if "pl" in name_l:  # 4PL / 5PL
+            def _fmt_coeff(v):
+                try:
+                    return f"{float(v):.4f}"
+                except (TypeError, ValueError):
+                    return "—"
             coef_chips = '<div class="model-coeff-chips">' + "".join(
-                f'<div class="chip"><span>{k.split(" ")[0]}</span><b>{_fmt_v(v)}</b></div>'
+                f'<div class="chip"><span>{k.split(" ")[0]}</span><b>{_fmt_coeff(v)}</b></div>'
                 for k, v in fit["coeffs"].items()
             ) + '</div>'
             ar = fit.get("abs_range")
