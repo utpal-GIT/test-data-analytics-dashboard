@@ -546,6 +546,8 @@ def render() -> None:
     )
     _display_indices = combined.index[_data_mask].to_numpy()
     combined = combined.loc[_data_mask].reset_index(drop=True)
+    # Serial number column (1-based, first column)
+    combined.insert(0, "S.No", range(1, len(combined) + 1))
     # ---- Export buttons ----
     style.section("Export")
     ec1, ec2 = st.columns(2)
@@ -1494,10 +1496,10 @@ def _build_report_pdf(
     }
     # Columns that should be formatted to 2 decimal places
     _2dp_cols = {"Predicted", "Error%", "Abs Error%", "Bias"}
-    headers = [_col_labels.get(c, c) for c in cols_show]
+    headers = ["S.No"] + [_col_labels.get(c, c) for c in cols_show]
     rows = [headers]
-    for _, r in table_df.iterrows():
-        row = []
+    for _sno, (_, r) in enumerate(table_df.iterrows(), start=1):
+        row = [str(_sno)]
         for c in cols_show:
             v = r.get(c)
             if c == "date":
@@ -1520,12 +1522,13 @@ def _build_report_pdf(
                 row.append("" if v is None else str(v))
         rows.append(row)
     _col_w = {
+        "S.No": 10,
         "sample_id": 24, "device_id": 22, "reagent_lot": 22,
         "date": 19, "age": 10, "gender": 14, "actual": 15,
         "abs_value": 15, "Predicted": 18, "Error%": 16,
         "Abs Error%": 16, "Bias": 14, "Status": 24,
     }
-    _data_col_widths = [_col_w.get(c, 15) * mm for c in cols_show]
+    _data_col_widths = [_col_w["S.No"] * mm] + [_col_w.get(c, 15) * mm for c in cols_show]
     data_tbl = Table(rows, repeatRows=1, hAlign="CENTER",
                      colWidths=_data_col_widths)
     data_tbl.setStyle(TableStyle([
