@@ -642,7 +642,8 @@ def render() -> None:
         combined = sorted_combined.reset_index(drop=True)
     st.session_state["_sort_perm_cache"] = _sort_perm
 
-    bcol1, bcol2, bcol3, bcol4, bcol5, bcol6 = st.columns([1, 1, 1, 1, 1, 1.5])
+    bcol1, bcol2, bcol3, bcol4, bcol5, bcol6, bcol7 = st.columns(
+        [1, 1, 1, 1.1, 1.3, 1, 1.6])
     if bcol1.button("➕  Add 10 rows", key="add_rows"):
         st.session_state[GRID_KEY] = pd.concat(
             [grid_df, _empty_rows(10)], ignore_index=True
@@ -673,14 +674,39 @@ def render() -> None:
         st.session_state[GRID_KEY] = kept
         db.replace_all_samples(user["id"], _grid_to_db(kept))
         st.rerun()
-    if bcol5.button("🧹  Clear all", key="clear_all"):
+    # Deselected *data* rows only — blank placeholder rows are left alone.
+    _data_idx = pd.Index(_display_indices)
+    _desel_idx = _data_idx[
+        ~grid_df.loc[_data_idx, "Selected"].fillna(False).astype(bool).to_numpy()
+    ]
+    _n_desel = len(_desel_idx)
+    if bcol5.button(
+        f"🗑  Clear deselected ({_n_desel})",
+        key="clear_desel",
+        disabled=(_n_desel == 0),
+        help="Delete every unchecked data row from the table.",
+    ):
+        kept = grid_df.drop(index=_desel_idx).reset_index(drop=True)
+        if kept.empty:
+            kept = _empty_rows()
+        kept = _coerce_dtypes(kept[GRID_INPUT_COLS].copy())
+        # Drop stale exclusions for sample IDs that no longer exist.
+        kept_sids = {s for s in kept["Sample ID"].astype(str).str.strip() if s}
+        excl = {str(s) for s in st.session_state.get("plot_exclude", [])}
+        excl &= kept_sids
+        st.session_state["_staged_plot_exclude"] = sorted(excl)
+        st.session_state["_prev_plot_exclude"] = sorted(excl)
+        st.session_state[GRID_KEY] = kept
+        db.replace_all_samples(user["id"], _grid_to_db(kept))
+        st.rerun()
+    if bcol6.button("🧹  Clear all", key="clear_all"):
         st.session_state["_staged_plot_exclude"] = []
         st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _empty_rows()
         db.replace_all_samples(user["id"], [])
         st.rerun()
     _n_ood = int(_out_det.sum())
-    if bcol6.button(
+    if bcol7.button(
         f"⚠  Deselect out of detection ({_n_ood})",
         key="desel_ood",
         disabled=(_n_ood == 0),
