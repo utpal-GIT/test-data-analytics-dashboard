@@ -187,8 +187,8 @@ def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 FILTER_KEYS = (
     "flt_param", "flt_device", "flt_sample", "flt_lot", "flt_gender",
-    "flt_date", "flt_age", "flt_err_pct", "flt_abs_err",
-    "flt_bias", "flt_in_range", "plot_exclude",
+    "flt_date", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
+    "flt_bias_v2", "flt_in_range", "plot_exclude",
 )
 
 
@@ -238,7 +238,7 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
             st.session_state.pop("flt_age", None)
         # Drop the computed-field sliders entirely; they re-render at their
         # full data-driven range (see _render_computed_filters).
-        for _k in ("flt_err_pct", "flt_abs_err", "flt_bias"):
+        for _k in ("flt_err_pct_v2", "flt_abs_err_v2", "flt_bias_v2"):
             st.session_state.pop(_k, None)
             st.session_state.pop(f"_bounds_{_k}", None)
         st.session_state["flt_in_range"] = "Any"
@@ -342,6 +342,11 @@ def _sync_range_state(key: str, lo: float, hi: float) -> None:
     If the slider was sitting at the *previous* full range (i.e. the user never
     narrowed it), stretch it to the new full range rather than silently
     clipping newly-arrived rows. Otherwise just clamp it into the new bounds.
+
+    A value stored without any recorded bounds is left over from the old
+    hard-coded sliders (or a pre-upgrade session); it is discarded so the
+    slider opens at its full data-driven range instead of being clamped to
+    the old +/-200 limits.
     """
     bkey = f"_bounds_{key}"
     prev = st.session_state.get(bkey)
@@ -349,16 +354,24 @@ def _sync_range_state(key: str, lo: float, hi: float) -> None:
     cur = st.session_state.get(key)
     if not isinstance(cur, (tuple, list)) or len(cur) != 2:
         return
+    if prev is None:
+        st.session_state[key] = (lo, hi)
+        return
     try:
         a, b = float(cur[0]), float(cur[1])
     except (TypeError, ValueError):
-        st.session_state.pop(key, None)
+        st.session_state[key] = (lo, hi)
         return
 
     def _same(x, y) -> bool:
         return abs(x - y) <= 1e-9 * max(1.0, abs(x), abs(y))
 
-    if prev is not None and _same(a, prev[0]) and _same(b, prev[1]):
+    if _same(a, prev[0]) and _same(b, prev[1]):
+        st.session_state[key] = (lo, hi)
+        return
+    if b < lo or a > hi:
+        # The narrowed window no longer overlaps the data at all; clamping it
+        # would leave a zero-width filter that hides every row.
         st.session_state[key] = (lo, hi)
         return
     st.session_state[key] = (min(max(a, lo), hi), min(max(b, lo), hi))
@@ -374,9 +387,11 @@ def _render_computed_filters(box, metrics_df: pd.DataFrame,
                                       DEFAULT_ABS_ERR_BOUNDS, floor_zero=True)
     b_lo, b_hi, b_step = _data_bounds(sub.get("Bias"), DEFAULT_BIAS_BOUNDS)
 
-    _sync_range_state("flt_err_pct", e_lo, e_hi)
-    _sync_range_state("flt_abs_err", a_lo, a_hi)
-    _sync_range_state("flt_bias", b_lo, b_hi)
+    # NOTE: the "_v2" key suffix retires any value left behind by the old
+    # fixed-range sliders, which would otherwise be clamped back to +/-200.
+    _sync_range_state("flt_err_pct_v2", e_lo, e_hi)
+    _sync_range_state("flt_abs_err_v2", a_lo, a_hi)
+    _sync_range_state("flt_bias_v2", b_lo, b_hi)
 
     target = box if box is not None else st.sidebar
     with target:
@@ -385,11 +400,11 @@ def _render_computed_filters(box, metrics_df: pd.DataFrame,
                    "nothing is hidden by default. Active when one parameter "
                    "is selected.")
         err_range = st.slider("Error %", e_lo, e_hi, (e_lo, e_hi),
-                              step=e_step, key="flt_err_pct")
+                              step=e_step, key="flt_err_pct_v2")
         abs_err_range = st.slider("|Error %|", a_lo, a_hi, (a_lo, a_hi),
-                                  step=a_step, key="flt_abs_err")
+                                  step=a_step, key="flt_abs_err_v2")
         bias_range = st.slider("Bias", b_lo, b_hi, (b_lo, b_hi),
-                               step=b_step, key="flt_bias")
+                               step=b_step, key="flt_bias_v2")
         in_range_choice = st.selectbox("In Range", ["Any", "Yes", "No"],
                                        key="flt_in_range")
     return {
