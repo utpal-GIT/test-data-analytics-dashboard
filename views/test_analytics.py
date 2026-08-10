@@ -14,6 +14,7 @@ Sidebar = static left filter rail including a Parameter multiselect.
 from __future__ import annotations
 
 import io
+import math
 from datetime import datetime, date
 
 import numpy as np
@@ -235,9 +236,11 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
             st.session_state["flt_age"] = (a_min, a_max)
         else:
             st.session_state.pop("flt_age", None)
-        st.session_state["flt_err_pct"] = (-200.0, 200.0)
-        st.session_state["flt_abs_err"] = (0.0, 200.0)
-        st.session_state["flt_bias"] = (-1000.0, 1000.0)
+        # Drop the computed-field sliders entirely; they re-render at their
+        # full data-driven range (see _render_computed_filters).
+        for _k in ("flt_err_pct", "flt_abs_err", "flt_bias"):
+            st.session_state.pop(_k, None)
+            st.session_state.pop(f"_bounds_{_k}", None)
         st.session_state["flt_in_range"] = "Any"
         st.session_state["plot_exclude"] = []
         st.session_state.pop("_prev_plot_exclude", None)
@@ -270,16 +273,10 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         age_range = None
 
     # ---- Computed-column filters (only meaningful when 1 parameter selected) ----
-    sb.markdown("## Computed-field filters")
-    sb.caption("Apply after the model is fit. Active when one parameter is selected.")
-    err_range = sb.slider("Error %", -200.0, 200.0, (-200.0, 200.0),
-                          step=1.0, key="flt_err_pct")
-    abs_err_range = sb.slider("|Error %|", 0.0, 200.0, (0.0, 200.0),
-                              step=1.0, key="flt_abs_err")
-    bias_range = sb.slider("Bias", -1000.0, 1000.0, (-1000.0, 1000.0),
-                           step=1.0, key="flt_bias")
-    in_range_choice = sb.selectbox("In Range", ["Any", "Yes", "No"],
-                                   key="flt_in_range")
+    # Reserved here but filled in later by _render_computed_filters(), once the
+    # model has been fit — that way each slider's min/max can be derived from
+    # the values it actually filters instead of a hard-coded guess.
+    computed_box = sb.container()
 
     sb.markdown("## Plot exclusions")
     plot_exclude = sb.multiselect(
@@ -289,9 +286,115 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         "parameters": pick_param,
         "device": pick_dev, "sample": pick_samp, "lot": pick_lot,
         "gender": pick_gender, "date_range": date_range, "age_range": age_range,
+        "plot_exclude": plot_exclude,
+        "computed_box": computed_box,
+    }
+
+
+# ---------------------------------------------------------------------------
+# computed-field filters (rendered after the fit, bounds taken from the data)
+# ---------------------------------------------------------------------------
+DEFAULT_ERR_BOUNDS = (-200.0, 200.0)
+DEFAULT_ABS_ERR_BOUNDS = (0.0, 200.0)
+DEFAULT_BIAS_BOUNDS = (-1000.0, 1000.0)
+
+
+def _nice_step(span: float) -> float:
+    """A 1/2/5-style step giving roughly 200 stops across `span`."""
+    if not np.isfinite(span) or span <= 0:
+        return 1.0
+    raw = span / 200.0
+    mag = 10.0 ** math.floor(math.log10(raw))
+    for mult in (1.0, 2.0, 5.0):
+        if raw <= mult * mag:
+            return mult * mag
+    return 10.0 * mag
+
+
+def _data_bounds(values, fallback: tuple[float, float],
+                 *, floor_zero: bool = False) -> tuple[float, float, float]:
+    """(low, high, step) covering every finite value in `values`, padded and
+    rounded outward. Falls back to `fallback` when there is nothing to measure."""
+    if values is None:
+        v = np.array([], dtype=float)
+    else:
+        v = pd.to_numeric(pd.Series(values), errors="coerce").to_numpy(dtype=float)
+        v = v[np.isfinite(v)]
+    if v.size == 0:
+        lo, hi = float(fallback[0]), float(fallback[1])
+        return lo, hi, _nice_step(hi - lo)
+    lo, hi = float(v.min()), float(v.max())
+    pad = (hi - lo) * 0.02 if (hi - lo) > 1e-12 else (abs(hi) * 0.1 or 1.0)
+    lo, hi = lo - pad, hi + pad
+    step = _nice_step(hi - lo)
+    lo = math.floor(lo / step) * step
+    hi = math.ceil(hi / step) * step
+    if floor_zero:
+        lo = max(0.0, lo)
+    if hi <= lo:
+        hi = lo + step
+    return float(lo), float(hi), float(step)
+
+
+def _sync_range_state(key: str, lo: float, hi: float) -> None:
+    """Keep a stored slider value valid as the data bounds move.
+
+    If the slider was sitting at the *previous* full range (i.e. the user never
+    narrowed it), stretch it to the new full range rather than silently
+    clipping newly-arrived rows. Otherwise just clamp it into the new bounds.
+    """
+    bkey = f"_bounds_{key}"
+    prev = st.session_state.get(bkey)
+    st.session_state[bkey] = (lo, hi)
+    cur = st.session_state.get(key)
+    if not isinstance(cur, (tuple, list)) or len(cur) != 2:
+        return
+    try:
+        a, b = float(cur[0]), float(cur[1])
+    except (TypeError, ValueError):
+        st.session_state.pop(key, None)
+        return
+
+    def _same(x, y) -> bool:
+        return abs(x - y) <= 1e-9 * max(1.0, abs(x), abs(y))
+
+    if prev is not None and _same(a, prev[0]) and _same(b, prev[1]):
+        st.session_state[key] = (lo, hi)
+        return
+    st.session_state[key] = (min(max(a, lo), hi), min(max(b, lo), hi))
+
+
+def _render_computed_filters(box, metrics_df: pd.DataFrame,
+                             idx: pd.Index) -> dict:
+    """Render the Error % / |Error %| / Bias / In Range filters into the
+    sidebar slot reserved by _render_filters, sized to the values in `idx`."""
+    sub = metrics_df.loc[idx] if len(idx) else metrics_df.iloc[0:0]
+    e_lo, e_hi, e_step = _data_bounds(sub.get("Error%"), DEFAULT_ERR_BOUNDS)
+    a_lo, a_hi, a_step = _data_bounds(sub.get("Abs Error%"),
+                                      DEFAULT_ABS_ERR_BOUNDS, floor_zero=True)
+    b_lo, b_hi, b_step = _data_bounds(sub.get("Bias"), DEFAULT_BIAS_BOUNDS)
+
+    _sync_range_state("flt_err_pct", e_lo, e_hi)
+    _sync_range_state("flt_abs_err", a_lo, a_hi)
+    _sync_range_state("flt_bias", b_lo, b_hi)
+
+    target = box if box is not None else st.sidebar
+    with target:
+        st.markdown("## Computed-field filters")
+        st.caption("Ranges auto-fit the values in the current selection, so "
+                   "nothing is hidden by default. Active when one parameter "
+                   "is selected.")
+        err_range = st.slider("Error %", e_lo, e_hi, (e_lo, e_hi),
+                              step=e_step, key="flt_err_pct")
+        abs_err_range = st.slider("|Error %|", a_lo, a_hi, (a_lo, a_hi),
+                                  step=a_step, key="flt_abs_err")
+        bias_range = st.slider("Bias", b_lo, b_hi, (b_lo, b_hi),
+                               step=b_step, key="flt_bias")
+        in_range_choice = st.selectbox("In Range", ["Any", "Yes", "No"],
+                                       key="flt_in_range")
+    return {
         "err_range": err_range, "abs_err_range": abs_err_range,
         "bias_range": bias_range, "in_range_choice": in_range_choice,
-        "plot_exclude": plot_exclude,
     }
 
 
@@ -486,6 +589,14 @@ def render() -> None:
         report_table_df = metrics_df.loc[_all_sel_param_idx].reset_index(drop=True)
     else:
         report_table_df = pd.DataFrame()
+
+    # Now that Predicted / Error% / Bias exist, render the computed-field
+    # filters into the sidebar slot reserved earlier, with their min/max taken
+    # from these values (so no row can fall outside the slider's reach).
+    filters.update(_render_computed_filters(
+        filters.get("computed_box"), metrics_df,
+        active_for_param if single_param_mode else pd.Index([], dtype="int64"),
+    ))
 
     # Refine the active subset by the computed-column filters (only meaningful
     # in single-param mode where Predicted etc. are real numbers).
