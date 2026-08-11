@@ -584,6 +584,14 @@ div[data-testid="stDataEditor"] [role="columnheader"] {{
     font-family:'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size:0.9rem;
 }}
+
+/* Plot points are clickable (click to mark), so show the hand cursor over
+   the plot area. Plotly puts the cursor on the .draglayer group via a
+   cursor-* class and the drag rect inherits it; scoping to cursor-move
+   (the pan/default state) leaves the modebar drag tools alone - zoom and
+   box select keep their crosshair, and the axis handles keep their
+   resize cursors. */
+.js-plotly-plot .draglayer.cursor-move .nsewdrag {{ cursor:pointer !important; }}
 </style>
 """
 
