@@ -1734,11 +1734,11 @@ def _build_report_pdf(
     elements.append(Paragraph("Passing-Bablok regression", h2))
     pb_tbl = Table([
         ["Slope", _fmt(pb_stats.get("slope")),
-         f"95 % CI: {_fmt(pb_stats.get('slope_ci', (None, None))[0])} ... "
-         f"{_fmt(pb_stats.get('slope_ci', (None, None))[1])}"],
+         f"95 % CI [{_fmt(pb_stats.get('slope_ci', (None, None))[0])}, "
+         f"{_fmt(pb_stats.get('slope_ci', (None, None))[1])}]"],
         ["Intercept", _fmt(pb_stats.get("intercept")),
-         f"95 % CI: {_fmt(pb_stats.get('intercept_ci', (None, None))[0])} ... "
-         f"{_fmt(pb_stats.get('intercept_ci', (None, None))[1])}"],
+         f"95 % CI [{_fmt(pb_stats.get('intercept_ci', (None, None))[0])}, "
+         f"{_fmt(pb_stats.get('intercept_ci', (None, None))[1])}]"],
         ["Pairs (n)", str(pb_stats.get("n", 0)), ""],
     ], colWidths=[35 * mm, 35 * mm, 100 * mm])
     pb_tbl.setStyle(table_style)
