@@ -36,7 +36,12 @@ GRID_INPUT_COLS = [
 ]
 GRID_KEY = "all_samples_grid"
 
-INITIAL_EMPTY_ROWS = 5
+# Blank rows kept in the grid while it holds no data, so there is always
+# somewhere to type or paste into.
+INITIAL_EMPTY_ROWS = 10
+
+# Columns that decide whether a row carries data at all
+DATA_COLS = ["Parameter", "Device ID", "Sample ID", "Reagent LOT", "Actual", "Abs"]
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +171,13 @@ def _canonical_gender(s) -> str:
     if g.startswith("f"): return "Female"
     if g.startswith("m"): return "Male"
     return "Other"
+
+
+def _data_row_mask(df: pd.DataFrame) -> pd.Series:
+    """True for rows that carry data; False for completely blank ones."""
+    if df.empty:
+        return pd.Series([], dtype=bool, index=df.index)
+    return ~df[DATA_COLS].apply(lambda r: all(_is_blank(v) for v in r), axis=1)
 
 
 def _sort_key(s: pd.Series) -> pd.Series:
@@ -499,6 +511,14 @@ def render() -> None:
         st.session_state[GRID_KEY] = _db_to_grid(db.load_all_samples(user["id"]))
 
     grid_df = _coerce_dtypes(st.session_state[GRID_KEY])
+
+    # Idle grid (nothing typed yet): keep a full block of blank rows to work in.
+    if not _data_row_mask(grid_df).any() and len(grid_df) < INITIAL_EMPTY_ROWS:
+        grid_df = _coerce_dtypes(pd.concat(
+            [grid_df, _empty_rows(INITIAL_EMPTY_ROWS - len(grid_df))],
+            ignore_index=True,
+        ))
+
     st.session_state[GRID_KEY] = grid_df
 
     # Auto-detect parameters: configured + any typed in the grid
@@ -683,10 +703,10 @@ def render() -> None:
 
     # Filter out completely empty rows from display (keep data rows only).
     # The editor's num_rows="dynamic" lets the user add/paste new rows.
-    _data_mask = ~combined[["Parameter", "Device ID", "Sample ID",
-                            "Reagent LOT", "Actual", "Abs"]].apply(
-        lambda r: all(_is_blank(v) for v in r), axis=1,
-    )
+    _data_mask = _data_row_mask(combined)
+    if not _data_mask.any():
+        # Nothing entered yet — show the blank rows instead of an empty grid.
+        _data_mask = pd.Series(True, index=combined.index)
     _display_indices = combined.index[_data_mask].to_numpy()
     combined = combined.loc[_data_mask].reset_index(drop=True)
     # Serial number column (1-based, first column)
