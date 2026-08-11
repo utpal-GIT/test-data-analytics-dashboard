@@ -994,6 +994,19 @@ _CLIA_META = {
 # ---------------------------------------------------------------------------
 MARKED_KEY = "plot_marked_sids"
 MARK_COLOR = "#7C3AED"
+SEL_NONCE_KEY = "_plot_sel_nonce"
+
+# Plot layout choices ("expand" one plot without leaving the page)
+VIEW_ALL = "All three"
+VIEW_CAL = "Expand · Concentration vs Absorbance"
+VIEW_PB = "Expand · Passing-Bablok"
+VIEW_BA = "Expand · Bland-Altman"
+EXPANDED_HEIGHT = 760
+
+
+def _chart_height(view: str, mine: str, normal: int = 520) -> int:
+    """Tall when this plot is the expanded one, normal otherwise."""
+    return EXPANDED_HEIGHT if view == mine else normal
 
 
 def _marked_sids() -> set[str]:
@@ -1005,16 +1018,30 @@ def _marked_sids() -> set[str]:
     return v
 
 
-def _sids_from_event(event) -> list[str]:
-    """Unique Sample IDs behind the points in a Plotly selection event.
+def _tag(sids) -> list[str]:
+    """Point customdata: the Sample ID plus the current click nonce.
 
-    Deduplicated because a click can land on both a data point and the ring
-    drawn over it — toggling twice would cancel itself out.
+    Streamlit only forwards a selection when it differs from the one it
+    already holds, so clicking the same point twice would otherwise be
+    silent — and the state cannot be reset from Python. Re-tagging every
+    point after each consumed click makes the next click on that same point
+    a different payload, so it comes through and can toggle the mark off.
+    Doing it through the data (rather than by changing the chart's widget
+    key) leaves the chart mounted, which is what keeps fullscreen, zoom and
+    pan alive while marking.
     """
+    n = int(st.session_state.get(SEL_NONCE_KEY, 0))
+    return [f"{s}#{n}" for s in sids]
+
+
+def _raw_customdata(event) -> tuple[str, ...]:
+    """The raw "sid#nonce" tokens of the points in a selection event, in
+    order and without duplicates (a click can land on both a data point and
+    the ring drawn over it)."""
     try:
         pts = event["selection"]["points"]
     except (TypeError, KeyError, IndexError):
-        return []
+        return ()
     out: list[str] = []
     for p in pts or []:
         cd = p.get("customdata") if isinstance(p, dict) else None
@@ -1025,6 +1052,16 @@ def _sids_from_event(event) -> list[str]:
         s = str(cd).strip()
         if s and s not in out:
             out.append(s)
+    return tuple(out)
+
+
+def _sids_from_tokens(tokens) -> list[str]:
+    """Sample IDs behind "sid#nonce" tokens, deduplicated."""
+    out: list[str] = []
+    for t in tokens:
+        sid = str(t).rsplit("#", 1)[0].strip()
+        if sid and sid not in out:
+            out.append(sid)
     return out
 
 
@@ -1042,7 +1079,7 @@ def _marked_trace(x, y, ok_mask, sids, marked: set[str]) -> list:
         return []
     return [go.Scatter(
         x=xx[m], y=yy[m], mode="markers", name="Marked",
-        customdata=ss[m], hoverinfo="skip",
+        customdata=_tag(ss[m]), hoverinfo="skip",
         marker=dict(size=18, symbol="circle", color="rgba(0,0,0,0)",
                     line=dict(width=3, color=MARK_COLOR)),
     )]
@@ -1051,27 +1088,32 @@ def _marked_trace(x, y, ok_mask, sids, marked: set[str]) -> list:
 def _plot_chart(slot, fig, name: str) -> None:
     """Render a chart that marks/unmarks points on click.
 
-    Streamlit selection state cannot be cleared programmatically, so the
-    widget key carries a per-chart nonce: after a click is consumed the chart
-    is remounted with an empty selection, which is what lets a second click on
-    the same point register as a new event and unmark it.
+    The widget key is stable, so the chart is never remounted and fullscreen
+    survives a click. Streamlit replays the last selection on every rerun,
+    so the tokens already acted on are remembered and ignored; a genuine new
+    click always carries a fresh nonce (see _tag) and is therefore distinct.
     """
-    nkey = f"_sel_nonce_{name}"
-    nonce = st.session_state.get(nkey, 0)
     event = slot.plotly_chart(
-        fig, use_container_width=True, key=f"{name}_{nonce}",
+        fig, use_container_width=True, key=name,
         on_select="rerun", selection_mode="points",
     )
-    hits = _sids_from_event(event)
-    if not hits:
+    seen_key = f"_sel_seen_{name}"
+    raw = _raw_customdata(event)
+    if not raw:
+        st.session_state[seen_key] = ()
         return
+    if raw == st.session_state.get(seen_key):
+        return          # replay of a click already consumed
+    st.session_state[seen_key] = raw
+
     marked = _marked_sids()
-    for sid in hits:
+    for sid in _sids_from_tokens(raw):
         if sid in marked:
             marked.discard(sid)
         else:
             marked.add(sid)
-    st.session_state[nkey] = nonce + 1
+    st.session_state[SEL_NONCE_KEY] = int(
+        st.session_state.get(SEL_NONCE_KEY, 0)) + 1
     st.rerun()
 
 
@@ -1100,7 +1142,7 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
             if m.any():
                 traces.append(go.Scatter(
                     x=x[m], y=y[m], mode="markers",
-                    name=meta["label"], text=sids[m], customdata=sids[m],
+                    name=meta["label"], text=sids[m], customdata=_tag(sids[m]),
                     marker=dict(size=meta["size"], color=clia_colors[key],
                                 symbol=meta["symbol"],
                                 line=dict(width=1, color="white"))))
@@ -1121,7 +1163,7 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
                     name=f"{grp} · {meta['label']}",
                     legendgroup=grp,
                     legendgrouptitle_text=grp if first else None,
-                    text=sids[m], customdata=sids[m],
+                    text=sids[m], customdata=_tag(sids[m]),
                     marker=dict(size=meta["size"],
                                 color=grp_color.get(grp, "#2563EB"),
                                 symbol=meta["symbol"],
@@ -1186,8 +1228,6 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     style.section("Plots",
                   "Click a point to mark it (click again to unmark) · "
                   "click legend to hide series")
-
-    _render_mark_toolbar(user, grid_df)
 
     # PB + BA top stats
     excl_for_stats = st.session_state.get("plot_exclude", [])
@@ -1273,62 +1313,72 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     else:
         _groups = None
 
+    # Expand one plot to full width. Streamlit's own fullscreen button drops
+    # out of fullscreen the moment a mark is added (marking changes the figure,
+    # which Streamlit treats as a new element) and its overlay hides the
+    # toolbar, so this in-app expand is the way to mark on a large plot.
+    view = st.radio(
+        "View",
+        [VIEW_ALL, VIEW_CAL, VIEW_PB, VIEW_BA],
+        horizontal=True, key="plot_view",
+        help="Expanding a plot keeps the marking toolbar on screen, unlike "
+             "the chart's own fullscreen button.",
+    )
+
+    # Marking toolbar sits directly above the charts it acts on.
+    _render_mark_toolbar(user, grid_df)
+
     marked = _marked_sids()
 
-    c1, c2 = st.columns(2)
     # Plot 1 — Abs vs Actual
-    with c1:
-        fig1 = go.Figure()
-        ok = np.isfinite(actual) & np.isfinite(abs_v)
-        p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
-        for t in _marked_trace(p1x, p1y, ok, sids, marked):
-            fig1.add_trace(t)
-        for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups):
-            fig1.add_trace(t)
-        if fit["success"] and len(fit["curve"][0]):
-            grid_abs, grid_actual = fit["curve"]
-            cx, cy = (grid_abs, grid_actual) if inv1 else (grid_actual, grid_abs)
-            fig1.add_trace(go.Scatter(
-                x=cx, y=cy, mode="lines",
-                name=f"{fit['name']} fit",
-                line=dict(color=style.PALETTE["accent"], width=2.5),
-            ))
-        lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
-        fig1.update_layout(title=title1, xaxis_title=lbl1x, yaxis_title=lbl1y,
-                           uirevision="chart1", clickmode="event+select",
-                           **style.plotly_layout())
-        _plot_chart(st, fig1, "chart1")
+    fig1 = go.Figure()
+    ok = np.isfinite(actual) & np.isfinite(abs_v)
+    p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
+    for t in _marked_trace(p1x, p1y, ok, sids, marked):
+        fig1.add_trace(t)
+    for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups):
+        fig1.add_trace(t)
+    if fit["success"] and len(fit["curve"][0]):
+        grid_abs, grid_actual = fit["curve"]
+        cx, cy = (grid_abs, grid_actual) if inv1 else (grid_actual, grid_abs)
+        fig1.add_trace(go.Scatter(
+            x=cx, y=cy, mode="lines",
+            name=f"{fit['name']} fit",
+            line=dict(color=style.PALETTE["accent"], width=2.5),
+        ))
+    lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
+    fig1.update_layout(title=title1, xaxis_title=lbl1x, yaxis_title=lbl1y,
+                       uirevision="chart1", clickmode="event+select",
+                       **style.plotly_layout(height=_chart_height(view, VIEW_CAL)))
 
     # Plot 2 — Passing-Bablok
-    with c2:
-        ok2 = np.isfinite(actual) & np.isfinite(pred)
-        pb = models.passing_bablok(actual[ok2], pred[ok2])
-        fig2 = go.Figure()
-        p2x, p2y = (pred, actual) if inv2 else (actual, pred)
-        for t in _marked_trace(p2x, p2y, ok2, sids, marked):
-            fig2.add_trace(t)
-        for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups):
-            fig2.add_trace(t)
-        if ok2.any():
-            lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
-            hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
-            grid = np.linspace(lo, hi, 100)
+    ok2 = np.isfinite(actual) & np.isfinite(pred)
+    pb = models.passing_bablok(actual[ok2], pred[ok2])
+    fig2 = go.Figure()
+    p2x, p2y = (pred, actual) if inv2 else (actual, pred)
+    for t in _marked_trace(p2x, p2y, ok2, sids, marked):
+        fig2.add_trace(t)
+    for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups):
+        fig2.add_trace(t)
+    if ok2.any():
+        lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
+        hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
+        grid = np.linspace(lo, hi, 100)
+        fig2.add_trace(go.Scatter(
+            x=grid, y=grid, mode="lines", name="Identity (y = x)",
+            line=dict(color=style.PALETTE["muted"], dash="dot"),
+        ))
+        if np.isfinite(pb["slope"]) and np.isfinite(pb["intercept"]):
+            pb_y = pb["slope"] * grid + pb["intercept"]
+            pbx, pby = (pb_y, grid) if inv2 else (grid, pb_y)
             fig2.add_trace(go.Scatter(
-                x=grid, y=grid, mode="lines", name="Identity (y = x)",
-                line=dict(color=style.PALETTE["muted"], dash="dot"),
+                x=pbx, y=pby, mode="lines", name="Passing-Bablok fit",
+                line=dict(color=style.PALETTE["warning"], width=2.5),
             ))
-            if np.isfinite(pb["slope"]) and np.isfinite(pb["intercept"]):
-                pb_y = pb["slope"] * grid + pb["intercept"]
-                pbx, pby = (pb_y, grid) if inv2 else (grid, pb_y)
-                fig2.add_trace(go.Scatter(
-                    x=pbx, y=pby, mode="lines", name="Passing-Bablok fit",
-                    line=dict(color=style.PALETTE["warning"], width=2.5),
-                ))
-        lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
-        fig2.update_layout(title=title2, xaxis_title=lbl2x, yaxis_title=lbl2y,
-                           uirevision="chart2", clickmode="event+select",
-                           **style.plotly_layout())
-        _plot_chart(st, fig2, "chart2")
+    lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
+    fig2.update_layout(title=title2, xaxis_title=lbl2x, yaxis_title=lbl2y,
+                       uirevision="chart2", clickmode="event+select",
+                       **style.plotly_layout(height=_chart_height(view, VIEW_PB)))
 
     # Plot 3 — Bland-Altman
     ok3 = np.isfinite(actual) & np.isfinite(pred)
@@ -1377,8 +1427,21 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     fig3.update_layout(title=title3, xaxis_title=lbl3x, yaxis_title=lbl3y,
                        uirevision="chart3", clickmode="event+select",
-                       **style.plotly_layout(height=500))
-    _plot_chart(st, fig3, "chart3")
+                       **style.plotly_layout(
+                           height=_chart_height(view, VIEW_BA, normal=500)))
+
+    # ---- place the charts: all three, or one expanded to full width ----
+    if view == VIEW_ALL:
+        pc1, pc2 = st.columns(2)
+        _plot_chart(pc1, fig1, "chart1")
+        _plot_chart(pc2, fig2, "chart2")
+        _plot_chart(st, fig3, "chart3")
+    elif view == VIEW_CAL:
+        _plot_chart(st, fig1, "chart1")
+    elif view == VIEW_PB:
+        _plot_chart(st, fig2, "chart2")
+    else:
+        _plot_chart(st, fig3, "chart3")
 
 
 
