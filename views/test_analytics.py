@@ -168,6 +168,19 @@ def _canonical_gender(s) -> str:
     return "Other"
 
 
+def _sort_key(s: pd.Series) -> pd.Series:
+    """Sort key for the grid: numeric where the column holds numbers, plain
+    text otherwise. Sorting a purely textual object column (Class, Gender)
+    previously relied on every value coercing to NaN; this makes the text
+    ordering explicit instead."""
+    if s.dtype != object:
+        return s
+    num = pd.to_numeric(s, errors="coerce")
+    if num.notna().any():
+        return num
+    return s.astype(str)
+
+
 def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "parameter":   df["Parameter"].astype(str),
@@ -625,6 +638,9 @@ def render() -> None:
     for c in ("Predicted", "Error%", "Abs Error%", "Bias"):
         if c in metrics_df.columns:
             metrics_df.loc[inactive_mask, c] = np.nan
+    if "Class" in metrics_df.columns:
+        metrics_df["Class"] = metrics_df["Class"].astype("object")
+        metrics_df.loc[inactive_mask, "Class"] = ""
     if "In Range" in metrics_df.columns:
         metrics_df["In Range"] = metrics_df["In Range"].astype("object")
         metrics_df.loc[inactive_mask, "In Range"] = None
@@ -649,6 +665,7 @@ def render() -> None:
     combined["Error%"]           = metrics_df["Error%"].values
     combined["Abs Error%"]       = metrics_df["Abs Error%"].values
     combined["Bias"]             = metrics_df["Bias"].values
+    combined["Class"]            = metrics_df["Class"].values
 
     # Internal arrays for status logic
     _in_range = metrics_df["In Range"].values
@@ -756,8 +773,7 @@ def render() -> None:
         try:
             sorted_combined = combined.sort_values(
                 by=sort_col, ascending=ascending,
-                na_position="last", key=lambda s: pd.to_numeric(s, errors="coerce")
-                if s.dtype == object else s,
+                na_position="last", key=_sort_key,
             )
         except Exception:
             sorted_combined = combined.sort_values(
@@ -868,6 +884,14 @@ def render() -> None:
             col_cfg[_nc] = st.column_config.NumberColumn(
                 _nc, disabled=True, format="%.2f",
             )
+    if "Class" in computed_cols:
+        col_cfg["Class"] = st.column_config.TextColumn(
+            "Class", disabled=True, width="small",
+            help="TP / TN / FP / FN against the configured normal range for "
+                 "the row's sex. Positive = abnormal (outside the normal "
+                 "range). Blank when the normal range is not configured or "
+                 "the row is excluded from the analysis.",
+        )
     col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
     _n_display = len(combined)
     _visible = min(_n_display + 1, 15)

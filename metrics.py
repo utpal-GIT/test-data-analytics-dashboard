@@ -65,6 +65,7 @@ def compute_row_metrics(
     in_range_col = []
     in_clia_col = []
     detect_flag_col = []
+    class_col = []
     for actual, pred, gender in zip(actual_arr, pred_arr, out["gender"].astype(str)):
         in_clia, _ = evaluate_clia(actual, pred, (param_cfg or {}).get("clia"))
         in_clia_col.append(in_clia)
@@ -76,10 +77,37 @@ def compute_row_metrics(
         in_det = in_detection_range(actual, det)
         detect_flag_col.append((in_det is False) if det else False)
 
+        # Confusion class — same rule as confusion_counts() below:
+        # positive = OUTSIDE the sex-specific normal range (abnormal).
+        class_col.append(classify_row(actual, pred, gender, param_cfg))
+
     out["In Range"] = in_range_col
     out["In CLIA"] = in_clia_col
     out["Out of Detection"] = detect_flag_col
+    out["Class"] = class_col
     return out
+
+
+def classify_row(actual, pred, gender, param_cfg: dict | None) -> str:
+    """TP / TN / FP / FN for one row, or "" when it cannot be evaluated.
+
+    Positive = result outside the configured normal range for that sex, so a
+    row counts only when both values are finite and a normal range is set.
+    """
+    normal = normal_for_gender(param_cfg or {}, gender)
+    a_norm = in_normal_range(actual, normal)
+    p_norm = in_normal_range(pred, normal)
+    if a_norm is None or p_norm is None:
+        return ""
+    a_pos = not a_norm      # abnormal == positive
+    p_pos = not p_norm
+    if a_pos and p_pos:
+        return "TP"
+    if (not a_pos) and (not p_pos):
+        return "TN"
+    if (not a_pos) and p_pos:
+        return "FP"
+    return "FN"
 
 
 # ---------------------------------------------------------------------------
@@ -93,33 +121,21 @@ def confusion_counts(df: pd.DataFrame, param_cfg: dict | None) -> dict:
     """
     tp = tn = fp = fn = 0
     n_eval = 0
+    # Uses classify_row so the per-row "Class" column and these totals can
+    # never drift apart.
     for _, row in df.iterrows():
-        actual = row.get("actual")
-        pred = row.get("Predicted")
-        gender = row.get("gender")
-        if actual is None or pred is None:
-            continue
-        try:
-            actual = float(actual); pred = float(pred)
-        except (TypeError, ValueError):
-            continue
-        if np.isnan(actual) or np.isnan(pred):
-            continue
-        normal = normal_for_gender(param_cfg or {}, gender)
-        a_norm = in_normal_range(actual, normal)
-        p_norm = in_normal_range(pred, normal)
-        if a_norm is None or p_norm is None:
+        cls = classify_row(row.get("actual"), row.get("Predicted"),
+                           row.get("gender"), param_cfg)
+        if not cls:
             continue
         n_eval += 1
-        a_pos = not a_norm   # abnormal == positive
-        p_pos = not p_norm
-        if a_pos and p_pos:
+        if cls == "TP":
             tp += 1
-        elif (not a_pos) and (not p_pos):
+        elif cls == "TN":
             tn += 1
-        elif (not a_pos) and p_pos:
+        elif cls == "FP":
             fp += 1
-        elif a_pos and (not p_pos):
+        else:
             fn += 1
 
     n_total = len(df)
