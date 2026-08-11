@@ -971,7 +971,7 @@ def render() -> None:
     # ---- Plots (only single param) ----
     if single_param_mode:
         # PB + BA stats panel + collapsible customizer + 3 charts
-        _render_charts(analysis_df, fit, param_cfg or {})
+        _render_charts(analysis_df, fit, param_cfg or {}, user, grid_df)
 
 
 
@@ -988,6 +988,91 @@ _CLIA_META = {
     "outside_clia": {"symbol": "diamond", "label": "Outside CLIA range", "size": 10},
     "out_det":      {"symbol": "x",       "label": "Out of detection",   "size": 11},
 }
+
+# ---------------------------------------------------------------------------
+# point marking (click a point in any plot; marks are shared by all plots)
+# ---------------------------------------------------------------------------
+MARKED_KEY = "plot_marked_sids"
+MARK_COLOR = "#7C3AED"
+
+
+def _marked_sids() -> set[str]:
+    """The set of currently marked Sample IDs (shared across all plots)."""
+    v = st.session_state.get(MARKED_KEY)
+    if not isinstance(v, set):
+        v = {str(s) for s in (v or [])}
+        st.session_state[MARKED_KEY] = v
+    return v
+
+
+def _sids_from_event(event) -> list[str]:
+    """Unique Sample IDs behind the points in a Plotly selection event.
+
+    Deduplicated because a click can land on both a data point and the ring
+    drawn over it — toggling twice would cancel itself out.
+    """
+    try:
+        pts = event["selection"]["points"]
+    except (TypeError, KeyError, IndexError):
+        return []
+    out: list[str] = []
+    for p in pts or []:
+        cd = p.get("customdata") if isinstance(p, dict) else None
+        if isinstance(cd, (list, tuple)):
+            cd = cd[0] if cd else None
+        if cd is None:
+            continue
+        s = str(cd).strip()
+        if s and s not in out:
+            out.append(s)
+    return out
+
+
+def _marked_trace(x, y, ok_mask, sids, marked: set[str]) -> list:
+    """A ring drawn around every marked point, so a point marked in one plot
+    shows up marked in all of them."""
+    if not marked:
+        return []
+    idx = np.where(ok_mask)[0]
+    if len(idx) == 0:
+        return []
+    xx, yy, ss = x[idx], y[idx], sids[idx]
+    m = np.array([str(s).strip() in marked for s in ss], dtype=bool)
+    if not m.any():
+        return []
+    return [go.Scatter(
+        x=xx[m], y=yy[m], mode="markers", name="Marked",
+        customdata=ss[m], hoverinfo="skip",
+        marker=dict(size=18, symbol="circle", color="rgba(0,0,0,0)",
+                    line=dict(width=3, color=MARK_COLOR)),
+    )]
+
+
+def _plot_chart(slot, fig, name: str) -> None:
+    """Render a chart that marks/unmarks points on click.
+
+    Streamlit selection state cannot be cleared programmatically, so the
+    widget key carries a per-chart nonce: after a click is consumed the chart
+    is remounted with an empty selection, which is what lets a second click on
+    the same point register as a new event and unmark it.
+    """
+    nkey = f"_sel_nonce_{name}"
+    nonce = st.session_state.get(nkey, 0)
+    event = slot.plotly_chart(
+        fig, use_container_width=True, key=f"{name}_{nonce}",
+        on_select="rerun", selection_mode="points",
+    )
+    hits = _sids_from_event(event)
+    if not hits:
+        return
+    marked = _marked_sids()
+    for sid in hits:
+        if sid in marked:
+            marked.discard(sid)
+        else:
+            marked.add(sid)
+    st.session_state[nkey] = nonce + 1
+    st.rerun()
 
 
 def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
@@ -1015,7 +1100,7 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
             if m.any():
                 traces.append(go.Scatter(
                     x=x[m], y=y[m], mode="markers",
-                    name=meta["label"], text=sids[m],
+                    name=meta["label"], text=sids[m], customdata=sids[m],
                     marker=dict(size=meta["size"], color=clia_colors[key],
                                 symbol=meta["symbol"],
                                 line=dict(width=1, color="white"))))
@@ -1036,7 +1121,7 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
                     name=f"{grp} · {meta['label']}",
                     legendgroup=grp,
                     legendgrouptitle_text=grp if first else None,
-                    text=sids[m],
+                    text=sids[m], customdata=sids[m],
                     marker=dict(size=meta["size"],
                                 color=grp_color.get(grp, "#2563EB"),
                                 symbol=meta["symbol"],
@@ -1046,11 +1131,63 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
     return traces
 
 
+def _render_mark_toolbar(user: dict | None, grid_df: pd.DataFrame | None) -> None:
+    """Toolbar shown once at least one point is marked: deselect the marked
+    rows (same effect as unchecking them in the grid) or clear the marks."""
+    marked = _marked_sids()
+    if not marked:
+        st.caption(
+            "Click any point to mark it — the same sample is marked in all "
+            "three plots. Click it again to unmark. A toolbar appears here "
+            "with the actions for the marked points."
+        )
+        return
+
+    shown = ", ".join(sorted(marked)[:6])
+    if len(marked) > 6:
+        shown += f" … (+{len(marked) - 6})"
+    t1, t2, t3 = st.columns([3.2, 1.5, 1.1])
+    t1.markdown(
+        f'<div class="row-legend"><span class="swatch" '
+        f'style="background:{MARK_COLOR}"></span>'
+        f'<b>{len(marked)} point{"s" if len(marked) != 1 else ""} marked</b>'
+        f'&nbsp;·&nbsp;{shown}</div>',
+        unsafe_allow_html=True,
+    )
+    can_edit = user is not None and grid_df is not None
+    if t2.button("☐  Deselect marked rows", key="mark_deselect",
+                 use_container_width=True, disabled=not can_edit,
+                 help="Uncheck these rows in the data table, so they drop out "
+                      "of the fit, the metrics and the plots."):
+        mask = grid_df["Sample ID"].astype(str).str.strip().isin(marked)
+        grid_df.loc[mask, "Selected"] = False
+        excl = {str(s) for s in st.session_state.get("plot_exclude", [])}
+        for idx in grid_df.index[mask]:
+            sid = str(grid_df.at[idx, "Sample ID"]).strip()
+            if sid:
+                excl.add(sid)
+        st.session_state["_staged_plot_exclude"] = sorted(excl)
+        st.session_state["_prev_plot_exclude"] = sorted(excl)
+        st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
+        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        st.session_state[MARKED_KEY] = set()
+        st.rerun()
+    if t3.button("✕  Clear marks", key="mark_clear", use_container_width=True):
+        st.session_state[MARKED_KEY] = set()
+        st.rerun()
+
+
 # ---------------------------------------------------------------------------
 # charts (PB + BA stats panel + collapsible customizer + 3 plots)
 # ---------------------------------------------------------------------------
-def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
-    style.section("Plots", "Click legend to hide series · use sidebar to drop sample IDs")
+def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
+                   user: dict | None = None,
+                   grid_df: pd.DataFrame | None = None) -> None:
+    style.section("Plots",
+                  "Click a point to mark it (click again to unmark) · "
+                  "click legend to hide series")
+
+    _render_mark_toolbar(user, grid_df)
 
     # PB + BA top stats
     excl_for_stats = st.session_state.get("plot_exclude", [])
@@ -1136,12 +1273,16 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     else:
         _groups = None
 
+    marked = _marked_sids()
+
     c1, c2 = st.columns(2)
     # Plot 1 — Abs vs Actual
     with c1:
         fig1 = go.Figure()
         ok = np.isfinite(actual) & np.isfinite(abs_v)
         p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
+        for t in _marked_trace(p1x, p1y, ok, sids, marked):
+            fig1.add_trace(t)
         for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups):
             fig1.add_trace(t)
         if fit["success"] and len(fit["curve"][0]):
@@ -1154,8 +1295,9 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
             ))
         lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
         fig1.update_layout(title=title1, xaxis_title=lbl1x, yaxis_title=lbl1y,
+                           uirevision="chart1", clickmode="event+select",
                            **style.plotly_layout())
-        st.plotly_chart(fig1, use_container_width=True)
+        _plot_chart(st, fig1, "chart1")
 
     # Plot 2 — Passing-Bablok
     with c2:
@@ -1163,6 +1305,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
         pb = models.passing_bablok(actual[ok2], pred[ok2])
         fig2 = go.Figure()
         p2x, p2y = (pred, actual) if inv2 else (actual, pred)
+        for t in _marked_trace(p2x, p2y, ok2, sids, marked):
+            fig2.add_trace(t)
         for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups):
             fig2.add_trace(t)
         if ok2.any():
@@ -1182,8 +1326,9 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
                 ))
         lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
         fig2.update_layout(title=title2, xaxis_title=lbl2x, yaxis_title=lbl2y,
+                           uirevision="chart2", clickmode="event+select",
                            **style.plotly_layout())
-        st.plotly_chart(fig2, use_container_width=True)
+        _plot_chart(st, fig2, "chart2")
 
     # Plot 3 — Bland-Altman
     ok3 = np.isfinite(actual) & np.isfinite(pred)
@@ -1192,8 +1337,10 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
     p3x, p3y = (diffs, means) if inv3 else (means, diffs)
     _grp3 = _groups[ok3] if _groups is not None else None
     fig3 = go.Figure()
-    for t in _scatter_traces(p3x, p3y,
-                             np.ones(len(p3x), dtype=bool),
+    _ok3_all = np.ones(len(p3x), dtype=bool)
+    for t in _marked_trace(p3x, p3y, _ok3_all, sids[ok3], marked):
+        fig3.add_trace(t)
+    for t in _scatter_traces(p3x, p3y, _ok3_all,
                              sids[ok3], clia_cat[ok3], _grp3):
         fig3.add_trace(t)
     if len(diffs):
@@ -1229,8 +1376,9 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict) -> None:
                 ))
     lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     fig3.update_layout(title=title3, xaxis_title=lbl3x, yaxis_title=lbl3y,
+                       uirevision="chart3", clickmode="event+select",
                        **style.plotly_layout(height=500))
-    st.plotly_chart(fig3, use_container_width=True)
+    _plot_chart(st, fig3, "chart3")
 
 
 
