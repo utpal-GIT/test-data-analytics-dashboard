@@ -15,6 +15,7 @@ from datetime import datetime
 import streamlit as st
 
 import db
+from passwords import hash_password, verify_password
 
 SESSION_HOURS = 3
 QUERY_KEY = "s"
@@ -168,12 +169,13 @@ def change_own_password_ui() -> None:
             confirm = st.text_input("Confirm new password", type="password")
             submit = st.form_submit_button("Update")
         if submit:
-            if current != user["password"]:
+            if not verify_password(current, user["password"]):
                 st.error("Current password is incorrect.")
             elif not new or new != confirm:
                 st.error("New password is empty or does not match confirmation.")
             else:
                 db.update_user(user["id"], user["username"], new, user["role"])
-                user["password"] = new
+                # Keep the cached copy in step with what is now stored.
+                user["password"] = hash_password(new)
                 st.session_state["user"] = user
                 st.success("Password updated.")

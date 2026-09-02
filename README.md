@@ -9,6 +9,7 @@ and report agreement and CLIA-2025 acceptance metrics.
 
 - **Login + roles** — admin and user. Sessions last 3 hours. Default admin
   account on first run is `admin / admin`; change it from User Management.
+  Passwords are stored hashed (PBKDF2-SHA256), never in plain text.
 - **Per-user data** — each user's patient table and parameter configurations
   are private. Admins can manage user accounts but do not see other users'
   patient data.
@@ -47,8 +48,10 @@ and report agreement and CLIA-2025 acceptance metrics.
     - `percent` — `TV ± percent of TV`
     - `threshold` — `TV ± absolute` when `|TV| ≤ T`, else `TV ± percent`
 - **User Management tab (admin only)** — list every user with their username
-  and password (per spec), add, edit, or delete. Cannot delete your own
-  account or the only remaining admin.
+  and how the password is stored, add, edit, or delete. Passwords are hashed,
+  so they cannot be displayed; the edit form sets a new one and leaving it
+  blank keeps the current password. Cannot delete your own account or the only
+  remaining admin.
 
 ## How to run
 
@@ -73,12 +76,53 @@ Streamlit opens at <http://localhost:8501>.
 The SQLite database `app_data.db` is created in this folder on first launch.
 Delete it to reset all users, samples, and configurations.
 
+## Storage
+
+By default the app stores everything in the local SQLite file `app_data.db`,
+which survives restarts and needs no setup.
+
+Hosts with an ephemeral filesystem — Streamlit Cloud among them — wipe that
+file on every restart, which loses samples and parameter configurations. To
+keep data there, point the app at an external database. Any SQLAlchemy URL
+works; a free Postgres from Neon or Supabase is enough for this data.
+
+1. Create a database and copy its connection string.
+2. Put it in `.streamlit/secrets.toml` (gitignored — see
+   `.streamlit/secrets.toml.example`):
+
+   ```toml
+   [database]
+   url = "postgresql://USER:PASSWORD@HOST/DBNAME?sslmode=require"
+   ```
+
+   On Streamlit Cloud paste the same into Settings → Secrets. `DATABASE_URL`
+   in the environment works too.
+3. Copy the existing local data across, once:
+
+   ```
+   python migrate_to_postgres.py --dry-run
+   python migrate_to_postgres.py
+   ```
+
+The header band shows which back end is live — "Local file" or "Postgres".
+Tables are created automatically on first connection, and `postgres://` URLs
+are accepted (rewritten for SQLAlchemy, with `sslmode=require` added for
+remote hosts).
+
+Passwords are stored as PBKDF2-SHA256 hashes. Rows written before hashing
+existed are still accepted at login and upgraded to a hash on the spot. Since
+a hash cannot be read back, User Management shows how each password is stored
+rather than its value, and the edit form sets a new one — leave it blank to
+keep the current password.
+
 ## File layout
 
 ```
 app.py                       # entry point + tab routing
 auth.py                      # login, sessions, password change UI
-db.py                        # SQLite schema + per-user CRUD
+db.py                        # schema + per-user CRUD (SQLite or Postgres)
+passwords.py                 # PBKDF2 password hashing
+migrate_to_postgres.py       # one-off copy of the local data to a server
 clia.py                      # CLIA acceptance + range evaluation
 models.py                    # linear / 4PL / 5PL fits, Passing-Bablok
 metrics.py                   # row metrics + confusion + diagnostic perf
@@ -102,5 +146,4 @@ the calibration fit itself.
 
 - CSV / XLSX import on the Test Analytics tab
 - Persist the user's chart edits across sessions
-- Hashed password storage with a separate "view password" admin action
 - Multi-parameter dashboards on a single page

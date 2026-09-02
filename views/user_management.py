@@ -3,9 +3,12 @@ User Management tab — admin only.
 
 Modern UX:
     - Top toolbar: search + Add new user
-    - Card grid: each user in a bordered container with role pill, password
-      reveal, and per-card Edit / Delete buttons
+    - Card grid: each user in a bordered container with role pill, how the
+      password is stored, and per-card Edit / Delete buttons
     - Edit form (or new-user form) appears below when an action is triggered
+
+Passwords are stored as PBKDF2 hashes, so they cannot be displayed. The edit
+form sets a new password instead; leaving it blank keeps the current one.
 """
 
 from __future__ import annotations
@@ -17,6 +20,7 @@ import streamlit as st
 import auth
 import db
 import style
+from passwords import is_hashed
 
 
 # session-state key holds the current edit target:
@@ -95,11 +99,9 @@ def _render_user_card(me: dict, all_users: list[dict], u: dict) -> None:
     role_class = "primary" if role == "admin" else "muted"
     you_pill = '<span class="usr-pill primary">You</span>' if is_self else ""
 
-    show_pw_key = f"usr_show_pw_{u['id']}"
-    if show_pw_key not in st.session_state:
-        st.session_state[show_pw_key] = False
-    pw_display = (u["password"] if st.session_state[show_pw_key]
-                  else "•" * max(6, len(u["password"] or "")))
+    # Passwords are stored as PBKDF2 hashes, so there is nothing to reveal —
+    # the card reports how the row is stored and the edit form sets a new one.
+    stored_label = "hashed" if is_hashed(u["password"]) else "plaintext (legacy)"
 
     with st.container(border=True):
         st.markdown(
@@ -116,7 +118,7 @@ def _render_user_card(me: dict, all_users: list[dict], u: dict) -> None:
             '</div>'
             '<div class="usr-row">'
             '<span class="lbl">Password</span>'
-            f'<span class="val mono">{pw_display}</span>'
+            f'<span class="val mono">{stored_label}</span>'
             '</div>'
             '<div class="usr-row">'
             '<span class="lbl">Role</span>'
@@ -125,14 +127,7 @@ def _render_user_card(me: dict, all_users: list[dict], u: dict) -> None:
             '</div>',
             unsafe_allow_html=True,
         )
-        b1, b2, b3 = st.columns(3)
-        if b1.button(
-            ("Hide" if st.session_state[show_pw_key] else "Reveal"),
-            key=f"usr_pw_toggle_{u['id']}", use_container_width=True,
-        ):
-            st.session_state[show_pw_key] = not st.session_state[show_pw_key]
-            st.rerun()
-
+        b2, b3 = st.columns(2)
         if b2.button("Edit", key=f"usr_edit_{u['id']}",
                      use_container_width=True):
             st.session_state[EDIT_KEY] = str(u["id"])
@@ -190,9 +185,14 @@ def _render_edit_panel(me: dict, users: list[dict]) -> None:
         new_u = c1.text_input("Username", value=seed.get("username", ""),
                               key=f"usr_form_u__{sfx}",
                               placeholder="e.g. alice")
-        new_p = c2.text_input("Password", value=seed.get("password", ""),
-                              key=f"usr_form_p__{sfx}",
-                              placeholder="any text - stored in plaintext")
+        new_p = c2.text_input(
+            "Password", value="", type="password",
+            key=f"usr_form_p__{sfx}",
+            placeholder=("set a password" if is_new
+                         else "leave blank to keep current"),
+            help=("Stored as a PBKDF2 hash. Existing passwords cannot be read "
+                  "back, so leave this blank unless you are setting a new one."),
+        )
         new_r = c3.selectbox(
             "Role", ["user", "admin"],
             index=0 if (seed.get("role") or "user") == "user" else 1,
@@ -217,8 +217,11 @@ def _render_edit_panel(me: dict, users: list[dict]) -> None:
 
     if save:
         new_u_s = new_u.strip()
-        if not new_u_s or not new_p:
-            st.error("Username and password are both required.")
+        if not new_u_s:
+            st.error("Username is required.")
+            return
+        if is_new and not new_p:
+            st.error("A password is required for a new user.")
             return
         if is_new:
             if any(u["username"] == new_u_s for u in users):
@@ -231,8 +234,10 @@ def _render_edit_panel(me: dict, users: list[dict]) -> None:
                 and any(u["username"] == new_u_s for u in users)):
                 st.error(f"A user named '{new_u_s}' already exists.")
                 return
-            db.update_user(seed["id"], new_u_s, new_p, new_r)
-            st.success(f"Updated user '{new_u_s}'.")
+            # Empty password field = keep the stored one.
+            db.update_user(seed["id"], new_u_s, new_p or None, new_r)
+            st.success(f"Updated user '{new_u_s}'."
+                       + (" Password changed." if new_p else ""))
         st.session_state[EDIT_KEY] = None
         st.rerun()
 
