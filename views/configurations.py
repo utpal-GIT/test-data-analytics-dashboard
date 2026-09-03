@@ -145,7 +145,7 @@ def render() -> None:
         "Each parameter is selectable in the Test Analytics tab · private to your account",
     )
 
-    params = db.list_parameters(user["id"])
+    params = db.parameters_for(user["id"])   # cached until saved or deleted
 
     # Top toolbar: search + Add new
     tcol1, tcol2 = st.columns([3, 1])

@@ -569,7 +569,7 @@ def render() -> None:
     user = auth.current_user()
 
     # All configured parameters (may be empty)
-    configured_params = db.list_parameters(user["id"])
+    configured_params = db.parameters_for(user["id"])   # cached until saved
     cfg_by_name = {p["name"]: p for p in configured_params}
 
     # Load multi-parameter grid into session
@@ -629,7 +629,8 @@ def render() -> None:
         if not grid_df["Selected"].equals(new_sel):
             grid_df["Selected"] = new_sel
             st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-            db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+            # Only the Selected column changed, and that lives in session
+            # state alone - never written to the database - so no write.
         # Clear plot exclusions when filter selection changes
         st.session_state["_staged_plot_exclude"] = []
         st.session_state["_prev_plot_exclude"] = []
@@ -654,7 +655,8 @@ def render() -> None:
     st.session_state["_prev_plot_exclude"] = list(_excl_ids)
     if _need_sync:
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        # Only the Selected column changed, and that lives in session
+        # state alone - never written to the database - so no write.
         st.rerun()
 
     # Build full df + apply filters + Selected mask
@@ -905,12 +907,14 @@ def render() -> None:
         st.session_state["_staged_plot_exclude"] = []
         st.session_state["_prev_plot_exclude"] = []
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        # Only the Selected column changed, and that lives in session
+        # state alone - never written to the database - so no write.
         st.rerun()
     if bcol3.button("☐  Deselect all", key="deselect_all"):
         grid_df["Selected"] = False
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        # Only the Selected column changed, and that lives in session
+        # state alone - never written to the database - so no write.
         st.rerun()
     if bcol4.button("🗑  Clear selected", key="clear_sel"):
         sel_mask = grid_df["Selected"].fillna(False).astype(bool)
@@ -972,7 +976,8 @@ def render() -> None:
         st.session_state["_staged_plot_exclude"] = sorted(excl)
         st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        # Only the Selected column changed, and that lives in session
+        # state alone - never written to the database - so no write.
         st.rerun()
 
     st.markdown(
@@ -1030,17 +1035,20 @@ def render() -> None:
     prev_data = grid_df.loc[_display_indices, GRID_INPUT_COLS].reset_index(drop=True)
     prev_data = _coerce_dtypes(prev_data.copy())
     changed = False
+    data_changed = False        # anything other than the Selected checkbox
     if len(input_only) != len(prev_data):
-        changed = True
+        changed = data_changed = True
     else:
         for col in GRID_INPUT_COLS:
             try:
-                if not input_only[col].equals(prev_data[col]):
-                    changed = True
-                    break
+                same = input_only[col].equals(prev_data[col])
             except Exception:
+                same = False
+            if not same:
                 changed = True
-                break
+                if col != "Selected":
+                    data_changed = True
+                    break
     if changed:
         if len(input_only) == len(prev_data):
             old_sel = prev_data["Selected"].fillna(False).astype(bool)
@@ -1059,7 +1067,10 @@ def render() -> None:
                 st.session_state["_staged_plot_exclude"] = sorted(excl)
                 st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = input_only
-        db.replace_all_samples(user["id"], _grid_to_db(input_only))
+        if data_changed:
+            # Ticking a checkbox changes nothing that is stored, so a
+            # selection-only edit skips the write entirely.
+            db.replace_all_samples(user["id"], _grid_to_db(input_only))
         st.rerun()
 
     # ---- Performance summary (only single param) ----
@@ -1194,36 +1205,54 @@ def _marked_trace(x, y, ok_mask, sids, marked: set[str]) -> list:
     )]
 
 
-def _plot_chart(slot, fig, name: str) -> None:
-    """Render a chart that marks/unmarks points on click.
+CHART_NAMES = ("chart1", "chart2", "chart3")
 
-    The widget key is stable, so the chart is never remounted and fullscreen
-    survives a click. Streamlit replays the last selection on every rerun,
-    so the tokens already acted on are remembered and ignored; a genuine new
-    click always carries a fresh nonce (see _tag) and is therefore distinct.
+
+def _consume_selections(names=CHART_NAMES) -> None:
+    """Apply clicks from the previous render, BEFORE the charts are rebuilt.
+
+    A click on a chart already causes one rerun of its own. Reading the
+    selection here — Streamlit keeps each widget's state in session_state —
+    means the marks are known before the figures are built, so no second
+    rerun is needed and a click costs one round trip instead of two.
+
+    Streamlit replays the last selection on every rerun, so tokens already
+    acted on are remembered and ignored; a genuine new click carries a fresh
+    nonce (see _tag) and is therefore distinct.
     """
-    event = slot.plotly_chart(
+    marked = _marked_sids()
+    consumed = False
+    for name in names:
+        seen_key = f"_sel_seen_{name}"
+        raw = _raw_customdata(st.session_state.get(name))
+        if not raw:
+            st.session_state[seen_key] = ()
+            continue
+        if raw == st.session_state.get(seen_key):
+            continue        # replay of a click already consumed
+        st.session_state[seen_key] = raw
+        for sid in _sids_from_tokens(raw):
+            if sid in marked:
+                marked.discard(sid)
+            else:
+                marked.add(sid)
+        consumed = True
+    if consumed:
+        st.session_state[SEL_NONCE_KEY] = int(
+            st.session_state.get(SEL_NONCE_KEY, 0)) + 1
+
+
+def _plot_chart(slot, fig, name: str) -> None:
+    """Draw a selection-aware chart. Clicks are picked up by
+    _consume_selections() at the start of the next rerun.
+
+    The widget key is stable, so the chart is never remounted and keeps its
+    zoom and pan while marking.
+    """
+    slot.plotly_chart(
         fig, use_container_width=True, key=name,
         on_select="rerun", selection_mode="points",
     )
-    seen_key = f"_sel_seen_{name}"
-    raw = _raw_customdata(event)
-    if not raw:
-        st.session_state[seen_key] = ()
-        return
-    if raw == st.session_state.get(seen_key):
-        return          # replay of a click already consumed
-    st.session_state[seen_key] = raw
-
-    marked = _marked_sids()
-    for sid in _sids_from_tokens(raw):
-        if sid in marked:
-            marked.discard(sid)
-        else:
-            marked.add(sid)
-    st.session_state[SEL_NONCE_KEY] = int(
-        st.session_state.get(SEL_NONCE_KEY, 0)) + 1
-    st.rerun()
 
 
 def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
@@ -1320,7 +1349,8 @@ def _render_mark_toolbar(user: dict | None, grid_df: pd.DataFrame | None) -> Non
         st.session_state["_staged_plot_exclude"] = sorted(excl)
         st.session_state["_prev_plot_exclude"] = sorted(excl)
         st.session_state[GRID_KEY] = _coerce_dtypes(grid_df[GRID_INPUT_COLS].copy())
-        db.replace_all_samples(user["id"], _grid_to_db(grid_df[GRID_INPUT_COLS]))
+        # Only the Selected column changed, and that lives in session
+        # state alone - never written to the database - so no write.
         st.session_state[MARKED_KEY] = set()
         st.rerun()
     if t3.button("✕  Clear marks", key="mark_clear", use_container_width=True):
@@ -1334,6 +1364,10 @@ def _render_mark_toolbar(user: dict | None, grid_df: pd.DataFrame | None) -> Non
 def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                    user: dict | None = None,
                    grid_df: pd.DataFrame | None = None) -> None:
+    # Clicks from the previous render are applied first, so the figures built
+    # below already show the right marks and no extra rerun is needed.
+    _consume_selections()
+
     style.section("Plots",
                   "Click a point to mark it (click again to unmark) · "
                   "click legend to hide series")

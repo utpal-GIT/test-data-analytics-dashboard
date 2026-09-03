@@ -186,8 +186,37 @@ def get_conn(engine=None):
         yield conn
 
 
+@contextmanager
+def read_conn(engine=None):
+    """A connection for read-only work, in autocommit.
+
+    A remote database charges a network round trip for BEGIN and for COMMIT
+    as well as for the query itself, which trebles the cost of a single
+    SELECT. Reads need no transaction, so they skip both.
+    """
+    eng = engine or get_engine()
+    with eng.connect().execution_options(
+            isolation_level="AUTOCOMMIT") as conn:
+        yield conn
+
+
 def _rows(result) -> list[dict]:
     return [dict(r) for r in result.mappings().all()]
+
+
+@st.cache_resource(show_spinner=False)
+def ensure_ready() -> bool:
+    """Schema creation, the secrets user sync and the expired-session sweep,
+    run ONCE per server process rather than on every rerun.
+
+    Streamlit re-executes the whole script on every interaction; doing this
+    work each time cost six round trips to a remote database before anything
+    was drawn. Nothing here changes between reruns, so it is cached. An
+    exception is not cached, so a failed connection is retried next rerun.
+    """
+    init_db()
+    cleanup_expired_sessions()
+    return True
 
 
 def init_db(engine=None) -> None:
@@ -258,7 +287,7 @@ def init_db(engine=None) -> None:
 # users
 # ---------------------------------------------------------------------------
 def list_users() -> list[dict]:
-    with get_conn() as c:
+    with read_conn() as c:
         return _rows(c.execute(
             text("SELECT id, username, password, role FROM users ORDER BY id")))
 
@@ -313,6 +342,7 @@ def update_user(user_id: int, username: str,
 def delete_user(user_id: int) -> None:
     with get_conn() as c:
         c.execute(text("DELETE FROM users WHERE id = :i"), {"i": user_id})
+    _invalidate_parameters()      # their configurations cascade away
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +355,7 @@ SAMPLE_COLS = [
 
 
 def load_samples(user_id: int, parameter: str | None = None) -> list[dict]:
-    with get_conn() as c:
+    with read_conn() as c:
         if parameter:
             return _rows(c.execute(
                 text("SELECT * FROM samples WHERE user_id = :u "
@@ -365,7 +395,7 @@ def replace_samples(user_id: int, parameter: str, rows: Iterable[dict]) -> None:
 
 def load_all_samples(user_id: int) -> list[dict]:
     """All samples across every parameter for this user."""
-    with get_conn() as c:
+    with read_conn() as c:
         return _rows(c.execute(
             text("SELECT * FROM samples WHERE user_id = :u ORDER BY id"),
             {"u": user_id}))
@@ -389,15 +419,30 @@ def replace_all_samples(user_id: int, rows: Iterable[dict]) -> None:
 # parameters / configurations
 # ---------------------------------------------------------------------------
 def list_parameters(user_id: int) -> list[dict]:
-    with get_conn() as c:
+    with read_conn() as c:
         rows = _rows(c.execute(
             text("SELECT * FROM parameters WHERE user_id = :u ORDER BY name"),
             {"u": user_id}))
     return [_decode_param(r) for r in rows]
 
 
+@st.cache_data(show_spinner=False)
+def parameters_for(user_id: int) -> list[dict]:
+    """list_parameters() with the result cached until a configuration is
+    written. Every rerun needs this list, and it changes only when the
+    Configurations tab saves or deletes something."""
+    return list_parameters(user_id)
+
+
+def _invalidate_parameters() -> None:
+    try:
+        parameters_for.clear()
+    except Exception:       # outside a Streamlit runtime
+        pass
+
+
 def get_parameter(user_id: int, name: str) -> dict | None:
-    with get_conn() as c:
+    with read_conn() as c:
         row = c.execute(
             text("SELECT * FROM parameters WHERE user_id = :u AND name = :n"),
             {"u": user_id, "n": name},
@@ -428,6 +473,7 @@ def upsert_parameter(user_id: int, cfg: dict) -> None:
                 "clia": json.dumps(cfg.get("clia") or {}),
             },
         )
+    _invalidate_parameters()
 
 
 def delete_parameter(user_id: int, name: str) -> None:
@@ -436,6 +482,7 @@ def delete_parameter(user_id: int, name: str) -> None:
             text("DELETE FROM parameters WHERE user_id = :u AND name = :n"),
             {"u": user_id, "n": name},
         )
+    _invalidate_parameters()
 
 
 # ---------------------------------------------------------------------------

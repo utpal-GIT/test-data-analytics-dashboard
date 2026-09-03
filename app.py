@@ -22,10 +22,9 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-# initialise schema + default admin on first launch
+# Schema + default admin, once per server process (not once per rerun).
 try:
-    db.init_db()
-    db.cleanup_expired_sessions()
+    db.ensure_ready()
 except Exception as exc:      # unreachable / misconfigured external database
     style.apply()
     st.error(
