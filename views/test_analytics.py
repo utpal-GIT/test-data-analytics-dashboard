@@ -43,6 +43,72 @@ INITIAL_EMPTY_ROWS = 10
 # Columns that decide whether a row carries data at all
 DATA_COLS = ["Parameter", "Device ID", "Sample ID", "Reagent LOT", "Actual", "Abs"]
 
+# Row status: a coloured dot for the grid, plain words for exports.
+STATUS_TEXT = {
+    "out_det": "Out of detection",
+    "in_clia": "In CLIA range",
+    "outside": "Outside CLIA",
+}
+STATUS_DOT = {
+    "out_det": "\U0001f534",
+    "in_clia": "\U0001f7e2",
+    "outside": "\U0001f7e1",
+}
+
+
+def _plain_status(v) -> str:
+    """The status without its dot, for files read outside the browser."""
+    s = str(v or "")
+    for dot in STATUS_DOT.values():
+        s = s.replace(dot, "")
+    return s.strip()
+
+
+# ---------------------------------------------------------------------------
+# reagent lots (report title, filename, and the lot table in the report)
+# ---------------------------------------------------------------------------
+def _lots_in(df: pd.DataFrame | None) -> list[tuple[str, int]]:
+    """[(reagent lot, number of rows)] for the rows a report covers, commonest
+    first. Rows with no lot recorded are left out."""
+    if df is None or len(df) == 0 or "reagent_lot" not in df.columns:
+        return []
+    s = df["reagent_lot"].astype(str).str.strip()
+    s = s[(s != "") & (s.str.lower() != "nan") & (s.str.lower() != "none")]
+    if s.empty:
+        return []
+    return [(str(k), int(v)) for k, v in s.value_counts().items()]
+
+
+def _safe_filename_part(s: str, limit: int = 28) -> str:
+    """Keep a value usable inside a filename on any platform."""
+    out = "".join(ch if (ch.isalnum() or ch in "-._") else "-" for ch in str(s))
+    while "--" in out:
+        out = out.replace("--", "-")
+    return out.strip("-._")[:limit]
+
+
+def _lots_label(lots: list[tuple[str, int]], max_shown: int = 4) -> str:
+    """Human-readable lot list for the report header."""
+    if not lots:
+        return "-"
+    names = [n for n, _ in lots]
+    if len(names) <= max_shown:
+        return ", ".join(names)
+    return ", ".join(names[:max_shown]) + f" (+{len(names) - max_shown} more)"
+
+
+def _lots_slug(lots: list[tuple[str, int]], max_shown: int = 2) -> str:
+    """Lot part of the report filename; empty when no lot is recorded."""
+    if not lots:
+        return ""
+    names = [_safe_filename_part(n) for n, _ in lots]
+    names = [n for n in names if n]
+    if not names:
+        return ""
+    if len(names) <= max_shown:
+        return "_".join(names)
+    return "_".join(names[:max_shown]) + f"_and{len(names) - max_shown}more"
+
 
 # ---------------------------------------------------------------------------
 # state / dtype helpers
@@ -693,11 +759,11 @@ def render() -> None:
 
     def _row_status(ir, od):
         if bool(od):
-            return "\U0001f534  Out of detection"
+            return f"{STATUS_DOT['out_det']}  {STATUS_TEXT['out_det']}"
         if ir is True:
-            return "\U0001f7e2  In CLIA range"
+            return f"{STATUS_DOT['in_clia']}  {STATUS_TEXT['in_clia']}"
         if ir is False:
-            return "\U0001f7e1  Outside CLIA"
+            return f"{STATUS_DOT['outside']}  {STATUS_TEXT['outside']}"
         return ""
     combined["Status"] = [_row_status(ir, od) for ir, od in zip(_in_range, _out_det)]
 
@@ -714,7 +780,14 @@ def render() -> None:
     # ---- Export buttons ----
     style.section("Export")
     ec1, ec2 = st.columns(2)
-    csv_bytes = combined.to_csv(index=False).encode("utf-8")
+    # Export as UTF-8 *with BOM*: Excel on Windows reads a BOM-less .csv in the
+    # system ANSI codepage, which turns any non-ASCII character into mojibake
+    # (the status dot came out as "ðŸŸ¢"). The status also goes out as plain
+    # words, since the dot is there to be looked at, not to be data.
+    _export = combined.copy()
+    if "Status" in _export.columns:
+        _export["Status"] = _export["Status"].map(_plain_status)
+    csv_bytes = _export.to_csv(index=False).encode("utf-8-sig")
     ec1.download_button(
         "⬇  Export data (CSV)",
         data=csv_bytes,
@@ -725,6 +798,7 @@ def render() -> None:
     )
     if single_param_mode and fit.get("success"):
         pdf_key = "pending_pdf_bytes"
+        pdf_name_key = "pending_pdf_name"
         if ec2.button(
             "📄  Generate report (PDF)",
             use_container_width=True,
@@ -742,12 +816,23 @@ def render() -> None:
                 ba_n = int(len(d_arr))
             else:
                 ba_bias = ba_sd = float("nan"); ba_n = 0
+            # Lots come from the rows the report prints, so the filename and
+            # the report body can never disagree.
+            _report_rows = (report_table_df if len(report_table_df)
+                            else analysis_df)
+            _lots = _lots_in(_report_rows)
             try:
                 st.session_state[pdf_key] = _build_report_pdf(
                     chosen_name, param_cfg or {}, counts, diag, fit,
                     analysis_df, pb_stats, ba_bias, ba_sd, ba_n,
-                    report_table_df,
+                    report_table_df, _lots,
                 )
+                _parts = ["report", _safe_filename_part(chosen_name)]
+                _lot_part = _lots_slug(_lots)
+                if _lot_part:
+                    _parts.append(_lot_part)
+                _parts.append(datetime.now().strftime("%Y%m%d_%H%M"))
+                st.session_state[pdf_name_key] = "_".join(_parts) + ".pdf"
             except ImportError:
                 st.warning(
                     "PDF report requires **reportlab** and **kaleido**. "
@@ -760,7 +845,10 @@ def render() -> None:
             ec2.download_button(
                 "⬇  Download report (PDF)",
                 data=st.session_state[pdf_key],
-                file_name=f"report_{chosen_name}_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                file_name=st.session_state.get(
+                    pdf_name_key,
+                    f"report_{_safe_filename_part(chosen_name)}"
+                    f"_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf"),
                 mime="application/pdf",
                 use_container_width=True,
                 key="export_report_btn",
@@ -773,6 +861,7 @@ def render() -> None:
             key="export_report_disabled",
         )
         st.session_state.pop("pending_pdf_bytes", None)
+        st.session_state.pop("pending_pdf_name", None)
 
     # ---- Data entry table (always visible, multi-parameter) ----
     style.section(
@@ -1548,6 +1637,7 @@ def _build_report_pdf(
     fit: dict, analysis_df: pd.DataFrame,
     pb_stats: dict, ba_bias: float, ba_sd: float, ba_n: int,
     report_table_df: pd.DataFrame | None = None,
+    lots: list[tuple[str, int]] | None = None,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
     from reportlab.lib.pagesizes import A4, landscape
@@ -1635,9 +1725,13 @@ def _build_report_pdf(
     elements = []
 
     # ---- Header ----
+    if lots is None:
+        lots = _lots_in(report_table_df if report_table_df is not None
+                        and len(report_table_df) else analysis_df)
     elements.append(Paragraph("Test Analytics Report", title_style))
     elements.append(Paragraph(
         f"Parameter: <b>{param_name}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Reagent LOT: <b>{_lots_label(lots)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Calibration model: <b>{fit.get('name','')}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         meta))
@@ -1675,6 +1769,24 @@ def _build_report_pdf(
     ], colWidths=[60 * mm, 110 * mm])
     cfg_tbl.setStyle(table_style)
     elements.append(cfg_tbl)
+
+    # ---- Reagent lots ----
+    elements.append(Paragraph("Reagent lots", h2))
+    if lots:
+        lot_rows = [["Reagent LOT", "Samples"]] + [[n, str(c)] for n, c in lots]
+        if len(lots) > 1:
+            lot_rows.append(["Total", str(sum(c for _, c in lots))])
+        lot_tbl = Table(lot_rows, colWidths=[110 * mm, 60 * mm])
+        lot_tbl.setStyle(table_style)
+        lot_tbl.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), rl.HexColor("#E2E8F0")),
+            ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+            ("ALIGN", (1, 0), (1, -1), "CENTER"),
+        ]))
+        elements.append(lot_tbl)
+    else:
+        elements.append(Paragraph("No reagent LOT recorded for these samples.",
+                                  body))
 
     # ---- Performance summary ----
     elements.append(Paragraph("Performance summary", h2))
