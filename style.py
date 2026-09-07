@@ -719,18 +719,31 @@ def _fmt_pct_v(v) -> str:
     return s if s == "—" else f"{s} %"
 
 
+def _fmt_dp(v, places: int) -> str:
+    """Fixed decimal places, matching how the PDF report prints the same
+    numbers (coefficients 4, concentration range 2)."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if f != f or f in (float("inf"), float("-inf")):
+        return "—"
+    return f"{f:.{places}f}"
+
+
 def _equation_html(name: str, coeffs: dict) -> str:
     """Render the fitted equation as inline HTML for the model card."""
     nm = (name or "").lower()
     if "no intercept" in nm:
         s = coeffs.get("slope", 0)
-        return f'<span class="var">y</span> = {s:.4g} · <span class="var">x</span>'
+        return (f'<span class="var">y</span> = {_fmt_dp(s, 4)} · '
+                f'<span class="var">x</span>')
     if "linear" in nm:
         s = coeffs.get("slope", 0)
         b = coeffs.get("intercept", 0)
         sign = "+" if b >= 0 else "−"
-        return (f'<span class="var">y</span> = {s:.4g} · <span class="var">x</span> '
-                f'{sign} {abs(b):.4g}')
+        return (f'<span class="var">y</span> = {_fmt_dp(s, 4)} · '
+                f'<span class="var">x</span> {sign} {_fmt_dp(abs(b), 4)}')
     if "4pl" in nm:
         return ('<span class="var">Conc</span> = C · '
                 '((A − D) / (<span class="var">Abs</span> − D) − 1)'
@@ -852,22 +865,20 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
         abs_range_note = ""
         name_l = (fit.get("name") or "").lower()
         if "pl" in name_l:  # 4PL / 5PL
-            def _fmt_coeff(v):
-                try:
-                    return f"{float(v):.4f}"
-                except (TypeError, ValueError):
-                    return "—"
             coef_chips = '<div class="model-coeff-chips">' + "".join(
-                f'<div class="chip"><span>{k.split(" ")[0]}</span><b>{_fmt_coeff(v)}</b></div>'
+                f'<div class="chip"><span>{k.split(" ")[0]}</span>'
+                f'<b>{_fmt_dp(v, 4)}</b></div>'
                 for k, v in fit["coeffs"].items()
             ) + '</div>'
             ar = fit.get("abs_range")
             cr = fit.get("conc_range")
             range_parts = []
             if ar:
-                range_parts.append(f'Absorbance: {ar[0]:.4g} – {ar[1]:.4g}')
+                range_parts.append(
+                    f'Absorbance: {_fmt_dp(ar[0], 4)} – {_fmt_dp(ar[1], 4)}')
             if cr:
-                range_parts.append(f'Concentration: {cr[0]:.4g} – {cr[1]:.4g}')
+                range_parts.append(
+                    f'Concentration: {_fmt_dp(cr[0], 2)} – {_fmt_dp(cr[1], 2)}')
             if range_parts:
                 abs_range_note = (
                     f'<div style="font-size:0.78rem;color:#64748B;margin-top:4px">'
