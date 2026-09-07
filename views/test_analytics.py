@@ -1599,6 +1599,16 @@ def _fmt(v) -> str:
     return f"{f:.4g}"
 
 
+def _fmt_coeff(v) -> str:
+    """Calibration coefficients to 4 decimal places, matching the model card
+    in the app (_fmt would give 4 significant digits instead)."""
+    if v is None: return "-"
+    try: f = float(v)
+    except (TypeError, ValueError): return str(v)
+    if not np.isfinite(f): return "-"
+    return f"{f:.4f}"
+
+
 def _fmt_pct(v) -> str:
     s = _fmt(v)
     return s if s == "-" else f"{s} %"
@@ -1849,7 +1859,7 @@ def _build_report_pdf(
     elements.append(Paragraph("Coefficients", h3))
     coeffs = fit.get("coeffs") or {}
     if coeffs:
-        coeff_rows = [[k, _fmt(v)] for k, v in coeffs.items()]
+        coeff_rows = [[k, _fmt_coeff(v)] for k, v in coeffs.items()]
     else:
         coeff_rows = [["-", "-"]]
     ar = fit.get("abs_range")
