@@ -1599,14 +1599,20 @@ def _fmt(v) -> str:
     return f"{f:.4g}"
 
 
-def _fmt_coeff(v) -> str:
-    """Calibration coefficients to 4 decimal places, matching the model card
-    in the app (_fmt would give 4 significant digits instead)."""
+def _fmt_dp(v, places: int) -> str:
+    """A fixed number of decimal places, handling missing and non-finite
+    values the same way _fmt does (which gives significant digits instead)."""
     if v is None: return "-"
     try: f = float(v)
     except (TypeError, ValueError): return str(v)
     if not np.isfinite(f): return "-"
-    return f"{f:.4f}"
+    return f"{f:.{places}f}"
+
+
+def _fmt_coeff(v) -> str:
+    """Calibration coefficients to 4 decimal places, matching the model card
+    in the app."""
+    return _fmt_dp(v, 4)
 
 
 def _fmt_pct(v) -> str:
@@ -1865,11 +1871,11 @@ def _build_report_pdf(
     ar = fit.get("abs_range")
     if ar:
         coeff_rows.append(["Valid Abs range",
-                           f"{ar[0]:.4g} – {ar[1]:.4g}"])
+                           f"{_fmt_dp(ar[0], 4)} – {_fmt_dp(ar[1], 4)}"])
     cr = fit.get("conc_range")
     if cr:
         coeff_rows.append(["Valid Conc range",
-                           f"{cr[0]:.4g} – {cr[1]:.4g}"])
+                           f"{_fmt_dp(cr[0], 2)} – {_fmt_dp(cr[1], 2)}"])
     coeff_tbl = Table(coeff_rows, colWidths=[60 * mm, 110 * mm])
     coeff_tbl.setStyle(table_style)
     elements.append(coeff_tbl)
