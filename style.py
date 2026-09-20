@@ -879,6 +879,11 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
             if cr:
                 range_parts.append(
                     f'Concentration: {_fmt_dp(cr[0], 2)} – {_fmt_dp(cr[1], 2)}')
+            pcr = fit.get("pred_conc_range")
+            if pcr and _fmt_dp(pcr[0], 2) != "—":
+                range_parts.append(
+                    f'Computed by model: {_fmt_dp(pcr[0], 2)} – '
+                    f'{_fmt_dp(pcr[1], 2)}')
             if range_parts:
                 abs_range_note = (
                     f'<div style="font-size:0.78rem;color:#64748B;margin-top:4px">'

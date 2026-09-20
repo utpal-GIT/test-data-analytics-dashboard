@@ -1695,7 +1695,7 @@ def _build_report_pdf(
     from reportlab.lib.units import mm
     from reportlab.lib import colors as rl
     from reportlab.platypus import (
-        BaseDocTemplate, Frame, PageTemplate, NextPageTemplate,
+        BaseDocTemplate, Frame, KeepTogether, PageTemplate, NextPageTemplate,
         Paragraph, Spacer, Table, TableStyle, Image, PageBreak,
     )
     from reportlab.lib.enums import TA_LEFT
@@ -1862,7 +1862,6 @@ def _build_report_pdf(
 
     # ---- Calibration model fit ----
     elements.append(Paragraph("Calibration model fit", h2))
-    elements.append(Paragraph("Coefficients", h3))
     coeffs = fit.get("coeffs") or {}
     if coeffs:
         coeff_rows = [[k, _fmt_coeff(v)] for k, v in coeffs.items()]
@@ -1876,9 +1875,15 @@ def _build_report_pdf(
     if cr:
         coeff_rows.append(["Valid Conc range",
                            f"{_fmt_dp(cr[0], 2)} – {_fmt_dp(cr[1], 2)}"])
+    pcr = fit.get("pred_conc_range")
+    if pcr and _fmt_dp(pcr[0], 2) != "-":
+        coeff_rows.append(["Conc computed by model",
+                           f"{_fmt_dp(pcr[0], 2)} – {_fmt_dp(pcr[1], 2)}"])
     coeff_tbl = Table(coeff_rows, colWidths=[60 * mm, 110 * mm])
     coeff_tbl.setStyle(table_style)
-    elements.append(coeff_tbl)
+    # Heading and table stay on one page: a 5PL table is tall enough to split
+    # across the page break and strand a single row under no heading.
+    elements.append(KeepTogether([Paragraph("Coefficients", h3), coeff_tbl]))
 
     elements.append(Paragraph("Goodness of fit", h3))
     m = fit.get("metrics") or {}

@@ -12,7 +12,9 @@ for back-calculation (predict).  Abs must lie strictly between A and D.
 
 Each fit returns a dict with:
     name, coeffs, predict (abs → conc), metrics, curve (abs_grid, conc_grid),
-    success, message.  4PL/5PL also include abs_range = (lo, hi).
+    success, message.  4PL/5PL also include abs_range = (lo, hi), the
+    measured concentration span conc_range, and pred_conc_range, the
+    concentrations the fitted model computes back from those absorbances.
 
 Also includes Passing-Bablok regression (for the method-comparison plot
 between Actual and Predicted, not for the calibration model itself).
@@ -180,6 +182,15 @@ def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
     metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
         np.array([]), np.array([]))
 
+    # What the model computes, as opposed to what went in: the lowest and
+    # highest concentration the inverse returns for the fitted absorbances.
+    # conc_range below is the span of the concentrations that were fed in.
+    if ok.any():
+        pred_conc_range = (float(np.min(conc_hat[ok])),
+                           float(np.max(conc_hat[ok])))
+    else:
+        pred_conc_range = (float("nan"), float("nan"))
+
     conc_lo, conc_hi = float(np.min(conc_arr)), float(np.max(conc_arr))
     if conc_lo == conc_hi:
         conc_hi = conc_lo + 1.0
@@ -190,6 +201,7 @@ def fit_4pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
         "metrics": metrics, "curve": (abs_grid, conc_grid),
         "abs_range": (abs_lo, abs_hi),
         "conc_range": (conc_lo, conc_hi),
+        "pred_conc_range": pred_conc_range,
         "success": True, "message": "",
     }
 
@@ -232,6 +244,15 @@ def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
     metrics = _metrics(conc_arr[ok], conc_hat[ok]) if ok.any() else _metrics(
         np.array([]), np.array([]))
 
+    # What the model computes, as opposed to what went in: the lowest and
+    # highest concentration the inverse returns for the fitted absorbances.
+    # conc_range below is the span of the concentrations that were fed in.
+    if ok.any():
+        pred_conc_range = (float(np.min(conc_hat[ok])),
+                           float(np.max(conc_hat[ok])))
+    else:
+        pred_conc_range = (float("nan"), float("nan"))
+
     conc_lo, conc_hi = float(np.min(conc_arr)), float(np.max(conc_arr))
     if conc_lo == conc_hi:
         conc_hi = conc_lo + 1.0
@@ -242,6 +263,7 @@ def fit_5pl(abs_arr: np.ndarray, conc_arr: np.ndarray) -> dict:
         "metrics": metrics, "curve": (abs_grid, conc_grid),
         "abs_range": (abs_lo, abs_hi),
         "conc_range": (conc_lo, conc_hi),
+        "pred_conc_range": pred_conc_range,
         "success": True, "message": "",
     }
 
