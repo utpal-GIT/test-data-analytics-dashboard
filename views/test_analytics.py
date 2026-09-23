@@ -278,7 +278,7 @@ def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 FILTER_KEYS = (
     "flt_param", "flt_device", "flt_sample", "flt_lot", "flt_gender",
-    "flt_date", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
+    "flt_date", "flt_dates", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
     "flt_bias_v2", "flt_in_range", "plot_exclude",
 )
 
@@ -296,8 +296,10 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     dates = pd.to_datetime(grid_df["Date"], errors="coerce").dropna()
     if len(dates) >= 1:
         d_min, d_max = dates.min().date(), dates.max().date()
+        date_options = sorted({d.strftime("%Y-%m-%d") for d in dates})
     else:
         d_min = d_max = None
+        date_options = []
 
     ages = pd.to_numeric(grid_df["Age"], errors="coerce").dropna()
     if len(ages) >= 1:
@@ -323,6 +325,7 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
             st.session_state["flt_date"] = (d_min, d_max)
         else:
             st.session_state.pop("flt_date", None)
+        st.session_state["flt_dates"] = []
         if a_min is not None:
             st.session_state["flt_age"] = (a_min, a_max)
         else:
@@ -355,8 +358,15 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     if d_min is not None:
         date_range = sb.date_input("Date range", value=(d_min, d_max),
                                    key="flt_date")
+        pick_dates = sb.multiselect(
+            "Specific dates", date_options, default=[], key="flt_dates",
+            help="Pick one or more exact dates. While any are picked they "
+                 "decide the filter on their own and the range above is "
+                 "ignored, so a date outside the range still shows.",
+        )
     else:
         date_range = None
+        pick_dates = []
 
     if a_min is not None:
         age_range = sb.slider("Age", a_min, a_max, (a_min, a_max), key="flt_age")
@@ -376,7 +386,8 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     return {
         "parameters": pick_param,
         "device": pick_dev, "sample": pick_samp, "lot": pick_lot,
-        "gender": pick_gender, "date_range": date_range, "age_range": age_range,
+        "gender": pick_gender, "date_range": date_range,
+        "dates": pick_dates, "age_range": age_range,
         "plot_exclude": plot_exclude,
         "computed_box": computed_box,
     }
@@ -548,7 +559,13 @@ def _apply_filters(df: pd.DataFrame, f: dict) -> pd.Index:
     if f["gender"]:
         gnorm = df["gender"].astype(str).map(_canonical_gender)
         mask &= gnorm.isin(f["gender"])
-    if f["date_range"]:
+    picked_dates = [str(x) for x in (f.get("dates") or [])]
+    if picked_dates:
+        # Exact dates win over the range: a date picked here would otherwise
+        # have to sit inside the range as well, which silently returns nothing.
+        d = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
+        mask &= d.isin(picked_dates)
+    elif f["date_range"]:
         d = pd.to_datetime(df["date"], errors="coerce")
         if isinstance(f["date_range"], tuple) and len(f["date_range"]) == 2:
             lo, hi = (pd.Timestamp(f["date_range"][0]),
@@ -1255,35 +1272,42 @@ def _plot_chart(slot, fig, name: str) -> None:
     )
 
 
-def _hover_data(sids, dates):
-    """customdata for a set of points: the click token first, the date second.
+def _hover_data(sids, dates, lots):
+    """customdata for a set of points: click token, date, reagent lot.
 
-    Column 0 stays the "sid#nonce" token the click handler reads, so adding
-    the date to the tooltip does not disturb marking.
+    Column 0 stays the "sid#nonce" token the click handler reads, so what the
+    tooltip shows never disturbs marking.
     """
-    tokens = _tag(sids)
-    if dates is None:
+    tokens = np.asarray(_tag(sids), dtype=object)
+    if dates is None and lots is None:
         return tokens
-    return np.column_stack([np.asarray(tokens, dtype=object),
-                            np.asarray(dates, dtype=object)])
+    n = len(tokens)
+    cols = [tokens,
+            np.asarray(dates if dates is not None else ["—"] * n, dtype=object),
+            np.asarray(lots if lots is not None else ["—"] * n, dtype=object)]
+    return np.column_stack(cols)
 
 
-def _hover_template(x_label: str, y_label: str, with_date: bool) -> str:
+def _hover_template(x_label: str, y_label: str,
+                    with_date: bool, with_lot: bool) -> str:
     tmpl = (f"<b>Sample %{{text}}</b><br>"
             f"{x_label}: %{{x}}<br>"
             f"{y_label}: %{{y}}")
     if with_date:
         tmpl += "<br>Date: %{customdata[1]}"
+    if with_lot:
+        tmpl += "<br>Reagent LOT: %{customdata[2]}"
     return tmpl
 
 
 def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
-                    dates=None, x_label="x", y_label="y"):
+                    dates=None, lots=None, x_label="x", y_label="y"):
     """Build scatter traces.  Shape **always** encodes CLIA status.
 
     *groups* = None  → colour also encodes CLIA status (default).
     *groups* = 1-D str array → colour encodes the group (device or lot).
     *dates*  = 1-D str array → the sample date is shown in the tooltip.
+    *lots*   = 1-D str array → the reagent lot is shown in the tooltip.
     """
     clia_colors = {
         "in_clia":      style.PALETTE["primary"],
@@ -1296,7 +1320,10 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
     x, y, sids, clia_cat = x[idx], y[idx], sids[idx], clia_cat[idx]
     if dates is not None:
         dates = np.asarray(dates)[idx]
-    htmpl = _hover_template(x_label, y_label, dates is not None)
+    if lots is not None:
+        lots = np.array([str(v).strip() or "—" for v in np.asarray(lots)[idx]])
+    htmpl = _hover_template(x_label, y_label,
+                            dates is not None, lots is not None)
 
     traces = []
 
@@ -1308,8 +1335,10 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
                 traces.append(go.Scatter(
                     x=x[m], y=y[m], mode="markers",
                     name=meta["label"], text=sids[m],
-                    customdata=_hover_data(sids[m],
-                                           None if dates is None else dates[m]),
+                    customdata=_hover_data(
+                        sids[m],
+                        None if dates is None else dates[m],
+                        None if lots is None else lots[m]),
                     hovertemplate=htmpl,
                     marker=dict(size=meta["size"], color=clia_colors[key],
                                 symbol=meta["symbol"],
@@ -1332,8 +1361,10 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
                     legendgroup=grp,
                     legendgrouptitle_text=grp if first else None,
                     text=sids[m],
-                    customdata=_hover_data(sids[m],
-                                           None if dates is None else dates[m]),
+                    customdata=_hover_data(
+                        sids[m],
+                        None if dates is None else dates[m],
+                        None if lots is None else lots[m]),
                     hovertemplate=htmpl,
                     marker=dict(size=meta["size"],
                                 color=grp_color.get(grp, "#2563EB"),
@@ -1518,7 +1549,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     for t in _marked_trace(p1x, p1y, ok, sids, marked):
         fig1.add_trace(t)
     for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups,
-                             dates=dates, x_label=lbl1x, y_label=lbl1y):
+                             dates=dates, lots=lots,
+                             x_label=lbl1x, y_label=lbl1y):
         fig1.add_trace(t)
     if fit["success"] and len(fit["curve"][0]):
         grid_abs, grid_actual = fit["curve"]
@@ -1541,7 +1573,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     for t in _marked_trace(p2x, p2y, ok2, sids, marked):
         fig2.add_trace(t)
     for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups,
-                             dates=dates, x_label=lbl2x, y_label=lbl2y):
+                             dates=dates, lots=lots,
+                             x_label=lbl2x, y_label=lbl2y):
         fig2.add_trace(t)
     if ok2.any():
         lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
@@ -1575,7 +1608,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
         fig3.add_trace(t)
     for t in _scatter_traces(p3x, p3y, _ok3_all,
                              sids[ok3], clia_cat[ok3], _grp3,
-                             dates=dates[ok3], x_label=lbl3x, y_label=lbl3y):
+                             dates=dates[ok3], lots=lots[ok3],
+                             x_label=lbl3x, y_label=lbl3y):
         fig3.add_trace(t)
     if len(diffs):
         bias = float(np.mean(diffs))
