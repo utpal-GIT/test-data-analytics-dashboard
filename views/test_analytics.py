@@ -827,7 +827,7 @@ def render() -> None:
                 st.session_state[pdf_key] = _build_report_pdf(
                     chosen_name, param_cfg or {}, counts, diag, fit,
                     analysis_df, pb_stats, ba_bias, ba_sd, ba_n,
-                    report_table_df, _lots,
+                    report_table_df, _lots, set(_marked_sids()),
                 )
                 _parts = ["report", _safe_filename_part(chosen_name)]
                 _lot_part = _lots_slug(_lots)
@@ -1688,6 +1688,7 @@ def _build_report_pdf(
     pb_stats: dict, ba_bias: float, ba_sd: float, ba_n: int,
     report_table_df: pd.DataFrame | None = None,
     lots: list[tuple[str, int]] | None = None,
+    marked: set[str] | None = None,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
     from reportlab.lib.pagesizes import A4, landscape
@@ -1699,6 +1700,7 @@ def _build_report_pdf(
         Paragraph, Spacer, Table, TableStyle, Image, PageBreak,
     )
     from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.utils import ImageReader
 
     buf = io.BytesIO()
     _margin = 14 * mm
@@ -1966,31 +1968,77 @@ def _build_report_pdf(
         fig_mpl.savefig(buf_img, format="png", dpi=150, bbox_inches="tight")
         plt.close(fig_mpl)
         buf_img.seek(0)
-        img = Image(buf_img, width=180 * mm, height=84 * mm)
+        # Scale to the frame width and keep the figure's own aspect, so the
+        # legend below the axes does not squash the plot.
+        iw, ih = ImageReader(buf_img).getSize()
+        width = 180 * mm
+        img = Image(buf_img, width=width, height=width * ih / iw)
         elements.append(Paragraph(caption, h3))
         elements.append(img)
         elements.append(Spacer(1, 4 * mm))
 
+    # Same encoding as the plots in the app: shape and colour carry the CLIA
+    # status, a ring marks the points picked out on screen.
+    _STATUS_STYLE = (
+        ("in_clia",      "In CLIA range",      "o", CLR_PRI,  46),
+        ("outside_clia", "Outside CLIA range", "D", CLR_WARN, 44),
+        ("out_det",      "Out of detection",   "X", CLR_ERR,  62),
+    )
+
+    _sids = (analysis_df["sample_id"].astype(str).to_numpy()
+             if "sample_id" in analysis_df.columns
+             else np.array([""] * len(analysis_df)))
+    _od = (analysis_df["Out of Detection"].fillna(False).astype(bool).to_numpy()
+           if "Out of Detection" in analysis_df.columns
+           else np.zeros(len(analysis_df), dtype=bool))
+    _ir = (analysis_df["In Range"].tolist()
+           if "In Range" in analysis_df.columns else [None] * len(analysis_df))
+    _outside = np.array([v is False for v in _ir], dtype=bool) & ~_od
+    _cat = np.where(_od, "out_det",
+                    np.where(_outside, "outside_clia", "in_clia"))
+    _marked = {str(s) for s in (marked or set())}
+
+    def _scatter_status(ax, x, y, mask, cat, sids):
+        """Draw the points grouped by status, then ring the marked ones."""
+        for key, label, marker, color, size in _STATUS_STYLE:
+            m = mask & (cat == key)
+            if m.any():
+                ax.scatter(x[m], y[m], s=size, c=color, marker=marker,
+                           edgecolors="white", linewidths=0.6, zorder=3,
+                           label=label)
+        if _marked:
+            mm = mask & np.array([str(s) in _marked for s in sids], dtype=bool)
+            if mm.any():
+                ax.scatter(x[mm], y[mm], s=210, facecolors="none",
+                           edgecolors=MARK_COLOR, linewidths=1.8, zorder=4,
+                           label="Marked")
+
+    def _legend_below(ax):
+        handles, labels = ax.get_legend_handles_labels()
+        if not handles:
+            return
+        ax.legend(handles, labels, fontsize=8, frameon=False,
+                  loc="upper center", bbox_to_anchor=(0.5, -0.16),
+                  ncol=min(4, len(handles)))
+
     # Plot 1 — Abs vs Actual
     ok = np.isfinite(actual) & np.isfinite(abs_v)
     fig1, ax1 = plt.subplots(figsize=(9, 4.2))
-    if ok.any():
-        ax1.scatter(actual[ok], abs_v[ok], s=50, c=CLR_PRI,
-                    edgecolors="white", linewidths=0.6, zorder=3)
     if fit.get("success") and len(fit.get("curve", (None, None))[0]):
         gabs, gact = fit["curve"]
-        ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2, label=f"{fit['name']} fit")
-        ax1.legend(fontsize=9)
+        ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2,
+                 label=f"{fit['name']} fit", zorder=2)
+    _scatter_status(ax1, actual, abs_v, ok, _cat, _sids)
     ax1.set_xlabel("Concentration"); ax1.set_ylabel("Absorbance")
     ax1.grid(True, alpha=0.25)
+    _legend_below(ax1)
     _mpl_to_image(fig1, "Concentration vs Absorbance (with fitted calibration curve)")
 
     # Plot 2 — Passing-Bablok
     ok2 = np.isfinite(actual) & np.isfinite(pred)
     fig2, ax2 = plt.subplots(figsize=(9, 4.2))
     if ok2.any():
-        ax2.scatter(actual[ok2], pred[ok2], s=50, c=CLR_PRI,
-                    edgecolors="white", linewidths=0.6, zorder=3)
+        _scatter_status(ax2, actual, pred, ok2, _cat, _sids)
         lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
         hi = float(max(np.nanmax(actual[ok2]), np.nanmax(pred[ok2])))
         grid = np.linspace(lo, hi, 100)
@@ -1999,9 +2047,9 @@ def _build_report_pdf(
         if np.isfinite(pb_stats.get("slope", float("nan"))):
             ax2.plot(grid, pb_stats["slope"] * grid + pb_stats["intercept"],
                      color=CLR_WARN, linewidth=2, label="Passing-Bablok fit")
-        ax2.legend(fontsize=9)
     ax2.set_xlabel("Actual"); ax2.set_ylabel("Predicted")
     ax2.grid(True, alpha=0.25)
+    _legend_below(ax2)
     _mpl_to_image(fig2, "Passing-Bablok: Actual vs Predicted")
 
     # Plot 3 — Bland-Altman
@@ -2009,8 +2057,9 @@ def _build_report_pdf(
     if ok2.any():
         means = (actual[ok2] + pred[ok2]) / 2.0
         diffs = pred[ok2] - actual[ok2]
-        ax3.scatter(means, diffs, s=50, c=CLR_PRI,
-                    edgecolors="white", linewidths=0.6, zorder=3)
+        _scatter_status(ax3, means, diffs,
+                        np.ones(len(means), dtype=bool),
+                        _cat[ok2], _sids[ok2])
         if len(diffs):
             bias = float(np.mean(diffs))
             sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
@@ -2024,10 +2073,10 @@ def _build_report_pdf(
                         label=f"+1.96 SD {loa_hi:.3f}")
             ax3.axhline(loa_lo, color=CLR_ERR, linestyle="--", linewidth=1.5,
                         label=f"-1.96 SD {loa_lo:.3f}")
-            ax3.legend(fontsize=9)
     ax3.set_xlabel("Mean of Actual & Predicted")
     ax3.set_ylabel("Predicted − Actual")
     ax3.grid(True, alpha=0.25)
+    _legend_below(ax3)
     _mpl_to_image(fig3, "Bland-Altman: Predicted − Actual")
 
     # ---- Data table (all selected rows, not just filtered) ----
