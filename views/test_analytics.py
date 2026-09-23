@@ -1255,11 +1255,35 @@ def _plot_chart(slot, fig, name: str) -> None:
     )
 
 
-def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
+def _hover_data(sids, dates):
+    """customdata for a set of points: the click token first, the date second.
+
+    Column 0 stays the "sid#nonce" token the click handler reads, so adding
+    the date to the tooltip does not disturb marking.
+    """
+    tokens = _tag(sids)
+    if dates is None:
+        return tokens
+    return np.column_stack([np.asarray(tokens, dtype=object),
+                            np.asarray(dates, dtype=object)])
+
+
+def _hover_template(x_label: str, y_label: str, with_date: bool) -> str:
+    tmpl = (f"<b>Sample %{{text}}</b><br>"
+            f"{x_label}: %{{x}}<br>"
+            f"{y_label}: %{{y}}")
+    if with_date:
+        tmpl += "<br>Date: %{customdata[1]}"
+    return tmpl
+
+
+def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
+                    dates=None, x_label="x", y_label="y"):
     """Build scatter traces.  Shape **always** encodes CLIA status.
 
     *groups* = None  → colour also encodes CLIA status (default).
     *groups* = 1-D str array → colour encodes the group (device or lot).
+    *dates*  = 1-D str array → the sample date is shown in the tooltip.
     """
     clia_colors = {
         "in_clia":      style.PALETTE["primary"],
@@ -1270,6 +1294,9 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
     if len(idx) == 0:
         return []
     x, y, sids, clia_cat = x[idx], y[idx], sids[idx], clia_cat[idx]
+    if dates is not None:
+        dates = np.asarray(dates)[idx]
+    htmpl = _hover_template(x_label, y_label, dates is not None)
 
     traces = []
 
@@ -1280,7 +1307,10 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
             if m.any():
                 traces.append(go.Scatter(
                     x=x[m], y=y[m], mode="markers",
-                    name=meta["label"], text=sids[m], customdata=_tag(sids[m]),
+                    name=meta["label"], text=sids[m],
+                    customdata=_hover_data(sids[m],
+                                           None if dates is None else dates[m]),
+                    hovertemplate=htmpl,
                     marker=dict(size=meta["size"], color=clia_colors[key],
                                 symbol=meta["symbol"],
                                 line=dict(width=1, color="white"))))
@@ -1301,7 +1331,10 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None):
                     name=f"{grp} · {meta['label']}",
                     legendgroup=grp,
                     legendgrouptitle_text=grp if first else None,
-                    text=sids[m], customdata=_tag(sids[m]),
+                    text=sids[m],
+                    customdata=_hover_data(sids[m],
+                                           None if dates is None else dates[m]),
+                    hovertemplate=htmpl,
                     marker=dict(size=meta["size"],
                                 color=grp_color.get(grp, "#2563EB"),
                                 symbol=meta["symbol"],
@@ -1421,6 +1454,10 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     sids = df["sample_id"].astype(str).to_numpy()
     devices = df["device_id"].astype(str).fillna("").to_numpy()
     lots = df["reagent_lot"].astype(str).fillna("").to_numpy()
+    # Sample date for the tooltip; rows with no date show a dash.
+    dates = (pd.to_datetime(df["date"], errors="coerce")
+             .dt.strftime("%Y-%m-%d").fillna("—").to_numpy()
+             if "date" in df.columns else np.array(["—"] * len(df)))
     out_of_det = df.get("Out of Detection",
                         pd.Series([False] * len(df))).fillna(False).to_numpy()
     in_range_raw = df.get("In Range",
@@ -1477,9 +1514,11 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     fig1 = go.Figure()
     ok = np.isfinite(actual) & np.isfinite(abs_v)
     p1x, p1y = (abs_v, actual) if inv1 else (actual, abs_v)
+    lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
     for t in _marked_trace(p1x, p1y, ok, sids, marked):
         fig1.add_trace(t)
-    for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups):
+    for t in _scatter_traces(p1x, p1y, ok, sids, clia_cat, _groups,
+                             dates=dates, x_label=lbl1x, y_label=lbl1y):
         fig1.add_trace(t)
     if fit["success"] and len(fit["curve"][0]):
         grid_abs, grid_actual = fit["curve"]
@@ -1489,7 +1528,6 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
             name=f"{fit['name']} fit",
             line=dict(color=style.PALETTE["accent"], width=2.5),
         ))
-    lbl1x, lbl1y = (y1lbl, x1lbl) if inv1 else (x1lbl, y1lbl)
     fig1.update_layout(title=title1, xaxis_title=lbl1x, yaxis_title=lbl1y,
                        uirevision="chart1", clickmode="event+select",
                        **style.plotly_layout(height=_chart_height(view, VIEW_CAL)))
@@ -1499,9 +1537,11 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     pb = models.passing_bablok(actual[ok2], pred[ok2])
     fig2 = go.Figure()
     p2x, p2y = (pred, actual) if inv2 else (actual, pred)
+    lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
     for t in _marked_trace(p2x, p2y, ok2, sids, marked):
         fig2.add_trace(t)
-    for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups):
+    for t in _scatter_traces(p2x, p2y, ok2, sids, clia_cat, _groups,
+                             dates=dates, x_label=lbl2x, y_label=lbl2y):
         fig2.add_trace(t)
     if ok2.any():
         lo = float(min(np.nanmin(actual[ok2]), np.nanmin(pred[ok2])))
@@ -1518,7 +1558,6 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                 x=pbx, y=pby, mode="lines", name="Passing-Bablok fit",
                 line=dict(color=style.PALETTE["warning"], width=2.5),
             ))
-    lbl2x, lbl2y = (y2lbl, x2lbl) if inv2 else (x2lbl, y2lbl)
     fig2.update_layout(title=title2, xaxis_title=lbl2x, yaxis_title=lbl2y,
                        uirevision="chart2", clickmode="event+select",
                        **style.plotly_layout(height=_chart_height(view, VIEW_PB)))
@@ -1528,13 +1567,15 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     means = (actual[ok3] + pred[ok3]) / 2.0
     diffs = pred[ok3] - actual[ok3]
     p3x, p3y = (diffs, means) if inv3 else (means, diffs)
+    lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     _grp3 = _groups[ok3] if _groups is not None else None
     fig3 = go.Figure()
     _ok3_all = np.ones(len(p3x), dtype=bool)
     for t in _marked_trace(p3x, p3y, _ok3_all, sids[ok3], marked):
         fig3.add_trace(t)
     for t in _scatter_traces(p3x, p3y, _ok3_all,
-                             sids[ok3], clia_cat[ok3], _grp3):
+                             sids[ok3], clia_cat[ok3], _grp3,
+                             dates=dates[ok3], x_label=lbl3x, y_label=lbl3y):
         fig3.add_trace(t)
     if len(diffs):
         bias = float(np.mean(diffs))
@@ -1567,7 +1608,6 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                     x=[x_lo, x_hi], y=[y_val, y_val], mode="lines",
                     name=lbl, line=dict(color=color, dash="dash", width=2),
                 ))
-    lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     fig3.update_layout(title=title3, xaxis_title=lbl3x, yaxis_title=lbl3y,
                        uirevision="chart3", clickmode="event+select",
                        **style.plotly_layout(
