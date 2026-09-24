@@ -43,6 +43,11 @@ INITIAL_EMPTY_ROWS = 10
 # Columns that decide whether a row carries data at all
 DATA_COLS = ["Parameter", "Device ID", "Sample ID", "Reagent LOT", "Actual", "Abs"]
 
+# The date filter is one control with two modes.
+DATE_MODE_RANGE = "Range"
+DATE_MODE_PICK = "Pick dates"
+NO_DATE_LABEL = "(no date)"
+
 # Row status: a coloured dot for the grid, plain words for exports.
 STATUS_TEXT = {
     "out_det": "Out of detection",
@@ -278,7 +283,7 @@ def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # ---------------------------------------------------------------------------
 FILTER_KEYS = (
     "flt_param", "flt_device", "flt_sample", "flt_lot", "flt_gender",
-    "flt_date", "flt_dates", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
+    "flt_date_mode", "flt_date", "flt_dates", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
     "flt_bias_v2", "flt_in_range", "plot_exclude",
 )
 
@@ -297,6 +302,8 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     if len(dates) >= 1:
         d_min, d_max = dates.min().date(), dates.max().date()
         date_options = sorted({d.strftime("%Y-%m-%d") for d in dates})
+        if len(dates) < len(grid_df):
+            date_options.append(NO_DATE_LABEL)   # rows with no date entered
     else:
         d_min = d_max = None
         date_options = []
@@ -325,7 +332,8 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
             st.session_state["flt_date"] = (d_min, d_max)
         else:
             st.session_state.pop("flt_date", None)
-        st.session_state["flt_dates"] = []
+        st.session_state["flt_date_mode"] = DATE_MODE_RANGE
+        st.session_state["flt_dates"] = list(date_options)
         if a_min is not None:
             st.session_state["flt_age"] = (a_min, a_max)
         else:
@@ -355,18 +363,29 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
     pick_gender = sb.multiselect("Gender", gender_buckets, default=gender_buckets,
                                  key="flt_gender")
 
+    # One date filter with two ways to express it, so there is never a
+    # question of which of two fields wins.
+    date_mode = DATE_MODE_RANGE
+    date_range = None
+    pick_dates = []
+    date_fp: tuple = ()
     if d_min is not None:
-        date_range = sb.date_input("Date range", value=(d_min, d_max),
-                                   key="flt_date")
-        pick_dates = sb.multiselect(
-            "Specific dates", date_options, default=[], key="flt_dates",
-            help="Pick one or more exact dates. While any are picked they "
-                 "decide the filter on their own and the range above is "
-                 "ignored, so a date outside the range still shows.",
-        )
-    else:
-        date_range = None
-        pick_dates = []
+        date_mode = sb.radio("Date filter", [DATE_MODE_RANGE, DATE_MODE_PICK],
+                             horizontal=True, key="flt_date_mode")
+        if date_mode == DATE_MODE_PICK:
+            pick_dates = sb.multiselect(
+                "Dates", date_options, default=date_options, key="flt_dates",
+                help="Untick a date to drop its rows, the same way the other "
+                     "filters work.",
+            )
+            if pick_dates and set(pick_dates) != set(date_options):
+                date_fp = tuple(sorted(str(d) for d in pick_dates))
+        else:
+            date_range = sb.date_input("Date range", value=(d_min, d_max),
+                                       key="flt_date")
+            if (isinstance(date_range, (tuple, list)) and len(date_range) == 2
+                    and (date_range[0], date_range[1]) != (d_min, d_max)):
+                date_fp = (str(date_range[0]), str(date_range[1]))
 
     if a_min is not None:
         age_range = sb.slider("Age", a_min, a_max, (a_min, a_max), key="flt_age")
@@ -387,7 +406,8 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         "parameters": pick_param,
         "device": pick_dev, "sample": pick_samp, "lot": pick_lot,
         "gender": pick_gender, "date_range": date_range,
-        "dates": pick_dates, "age_range": age_range,
+        "date_mode": date_mode, "dates": pick_dates, "date_fp": date_fp,
+        "age_range": age_range,
         "plot_exclude": plot_exclude,
         "computed_box": computed_box,
     }
@@ -560,12 +580,15 @@ def _apply_filters(df: pd.DataFrame, f: dict) -> pd.Index:
         gnorm = df["gender"].astype(str).map(_canonical_gender)
         mask &= gnorm.isin(f["gender"])
     picked_dates = [str(x) for x in (f.get("dates") or [])]
-    if picked_dates:
-        # Exact dates win over the range: a date picked here would otherwise
-        # have to sit inside the range as well, which silently returns nothing.
-        d = pd.to_datetime(df["date"], errors="coerce").dt.strftime("%Y-%m-%d")
-        mask &= d.isin(picked_dates)
-    elif f["date_range"]:
+    if f.get("date_mode") == DATE_MODE_PICK and picked_dates:
+        # Unticking a date drops its rows, like the other multiselects. An
+        # empty picker means no restriction, again like the others.
+        d = pd.to_datetime(df["date"], errors="coerce")
+        m = d.dt.strftime("%Y-%m-%d").isin(picked_dates)
+        if NO_DATE_LABEL in picked_dates:
+            m |= d.isna()
+        mask &= m
+    elif f.get("date_mode") != DATE_MODE_PICK and f["date_range"]:
         d = pd.to_datetime(df["date"], errors="coerce")
         if isinstance(f["date_range"], tuple) and len(f["date_range"]) == 2:
             lo, hi = (pd.Timestamp(f["date_range"][0]),
@@ -631,6 +654,10 @@ def render() -> None:
         tuple(sorted(str(s) for s in filters.get("sample", []))),
         tuple(sorted(str(s) for s in filters.get("lot", []))),
         tuple(sorted(str(s) for s in filters.get("gender", []))),
+        # Narrowing the dates re-selects too; an untouched full range or a
+        # fully ticked picker contributes nothing, so it cannot by itself
+        # make every row look "filtered".
+        tuple(filters.get("date_fp") or ()),
     )
     _prev_fp = st.session_state.get("_prev_filter_fp")
     if _filter_fp != _prev_fp:
