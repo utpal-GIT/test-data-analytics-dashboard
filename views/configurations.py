@@ -183,7 +183,16 @@ def render() -> None:
         _edit_dialog(user, params)
 
 
-@st.dialog("Parameter configuration", width="large")
+def _dismiss_dialog() -> None:
+    """Closing the modal with X, Esc or a click outside has to clear the edit
+    target too. Without this the target survives the dismissal, and because
+    every tab re-runs on any interaction, the next click anywhere in the app
+    would pop the dialog straight back up."""
+    st.session_state[EDIT_KEY] = None
+
+
+@st.dialog("Parameter configuration", width="large",
+           on_dismiss=_dismiss_dialog)
 def _edit_dialog(user: dict, params: list[dict]) -> None:
     _render_edit_panel(user, params)
 
