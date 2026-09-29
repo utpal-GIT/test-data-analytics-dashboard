@@ -526,6 +526,17 @@ div[data-testid="stDataEditor"] [role="columnheader"] {{
 .cfg-preview.warn .lbl {{ color:#B45309; }}
 .cfg-preview.warn .sub {{ color:#92400E; }}
 
+/* ===== Configurations table (header + one row of widgets per config) ===== */
+.cfg-th {{
+    font-size:0.72rem; font-weight:700; color:#475569;
+    text-transform:uppercase; letter-spacing:0.04em;
+    padding:0 0 6px 2px; border-bottom:1px solid #E2E8F0;
+}}
+.cfg-td {{
+    font-size:0.82rem; color:#0F172A; padding:4px 0 4px 2px;
+    overflow:hidden; text-overflow:ellipsis; white-space:nowrap;
+}}
+
 /* ===== Configurations cards (v2 — used inside st.container) ===== */
 .cfg-card-name {{
     font-size:1rem; font-weight:700; color:#0F172A;

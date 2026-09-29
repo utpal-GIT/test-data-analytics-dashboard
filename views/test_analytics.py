@@ -915,7 +915,11 @@ def render() -> None:
                     analysis_df, pb_stats, ba_bias, ba_sd, ba_n,
                     report_table_df, _lots, set(_marked_sids()),
                 )
-                _parts = ["report", _safe_filename_part(chosen_name)]
+                _parts = ["report"]
+                _vendor_part = _safe_filename_part(chosen_vendor or "")
+                if _vendor_part:
+                    _parts.append(_vendor_part)
+                _parts.append(_safe_filename_part(chosen_name))
                 _lot_part = _lots_slug(_lots)
                 if _lot_part:
                     _parts.append(_lot_part)

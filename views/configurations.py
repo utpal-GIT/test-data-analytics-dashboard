@@ -8,14 +8,15 @@ CLIA acceptance modes:
     threshold   -> TV +/- value when |TV| <= T, else TV +/- percent of |TV|
 
 UX:
-    - Cards grid for existing parameters with per-card Edit / Delete buttons
-    - "Add new parameter" button at the top
-    - Edit form appears below when editing or adding (Cancel returns to list)
+    - "Add new parameter" and the search box at the top
+    - Everything already configured is listed as a table, with edit and
+      delete buttons on each row
+    - Adding or editing opens a modal dialog over the list
 """
 
 from __future__ import annotations
 
-import math
+from html import escape
 
 import streamlit as st
 
@@ -161,103 +162,104 @@ def render() -> None:
     # Top toolbar: search + Add new
     tcol1, tcol2 = st.columns([3, 1])
     query = tcol1.text_input(
-        "Search parameters", placeholder="Filter by name…", label_visibility="collapsed",
-        key="cfg_search",
+        "Search parameters", placeholder="Filter by vendor or name…",
+        label_visibility="collapsed", key="cfg_search",
     )
     if tcol2.button("➕  Add new parameter", use_container_width=True,
                     type="primary", key="cfg_add_new"):
         st.session_state[EDIT_KEY] = ""   # empty string = creating new
         st.rerun()
 
-    # Filter cards by search
     filt = (query or "").strip().lower()
     visible = [p for p in params
                if not filt or filt in p["name"].lower()
                or filt in (p.get("vendor") or "").lower()]
 
-    _render_parameter_cards(user, visible, params)
+    _render_parameter_table(user, visible, params)
 
-    # If editing or adding, show the form panel below
-    if EDIT_KEY in st.session_state and st.session_state[EDIT_KEY] is not None:
-        _render_edit_panel(user, params)
+    # Adding or editing happens in a modal over the list, so the fields are
+    # the only thing to look at while they are being filled in.
+    if st.session_state.get(EDIT_KEY) is not None:
+        _edit_dialog(user, params)
+
+
+@st.dialog("Parameter configuration", width="large")
+def _edit_dialog(user: dict, params: list[dict]) -> None:
+    _render_edit_panel(user, params)
 
 
 # ---------------------------------------------------------------------------
-# cards grid
+# table of existing configurations
 # ---------------------------------------------------------------------------
-def _render_parameter_cards(
+# Vendor, Parameter, Normal (M), Normal (F), Detection, CLIA, edit, delete
+_COL_WIDTHS = [1.1, 1.2, 1.0, 1.0, 1.0, 1.9, 0.42, 0.42]
+_COL_HEADS = ["Vendor", "Parameter", "Normal (M)", "Normal (F)",
+              "Detection", "CLIA acceptance", "", ""]
+
+
+def _render_parameter_table(
     user: dict, visible: list[dict], all_params: list[dict],
 ) -> None:
     if not all_params:
         style.section("Existing parameters")
-        st.info("No parameters yet. Click **➕ Add new parameter** to create your first one.")
+        st.info("No parameters yet. Click **➕ Add new parameter** to create "
+                "your first one.")
         return
 
     style.section(
         "Existing parameters",
-        f"{len(visible)} of {len(all_params)} shown" if visible != all_params
-        else f"{len(all_params)} configured",
+        f"{len(visible)} of {len(all_params)} shown"
+        if visible != all_params else f"{len(all_params)} configured",
     )
-
     if not visible:
         st.info("No parameters match your search.")
         return
 
-    n_cols = 3
-    rows = math.ceil(len(visible) / n_cols)
-    for r in range(rows):
-        cols = st.columns(n_cols)
-        for c in range(n_cols):
-            i = r * n_cols + c
-            if i >= len(visible):
-                continue
-            p = visible[i]
-            with cols[c]:
-                _render_card(user, p)
+    head = st.columns(_COL_WIDTHS, vertical_alignment="center")
+    for col, label in zip(head, _COL_HEADS):
+        col.markdown(f'<div class="cfg-th">{label}</div>',
+                     unsafe_allow_html=True)
 
+    for p in visible:
+        vendor = (p.get("vendor") or "").strip()
+        name = p["name"]
+        sfx = _slug(vendor, name)
+        cells = [
+            vendor or "—",
+            name,
+            _range_str(p.get("normal_male") or {}),
+            _range_str(p.get("normal_female") or {}),
+            _range_str(p.get("detection") or {}),
+            _clia_str(p.get("clia") or {}),
+        ]
+        row = st.columns(_COL_WIDTHS, vertical_alignment="center")
+        for col, value in zip(row, cells):
+            col.markdown(f'<div class="cfg-td">{escape(str(value))}</div>',
+                         unsafe_allow_html=True)
 
-def _render_card(user: dict, p: dict) -> None:
-    """Render a single parameter card with Edit / Delete buttons."""
-    name = p["name"]
-    vendor = (p.get("vendor") or "").strip()
-    sfx = _slug(vendor, name)
-    nm = p.get("normal_male") or {}
-    nf = p.get("normal_female") or {}
-    det = p.get("detection") or {}
-    clia = p.get("clia") or {}
-
-    with st.container(border=True):
-        st.markdown(
-            f'<div class="cfg-card-name">{name}</div>'
-            f'<div class="cfg-card-vendor">{vendor or "no vendor"}</div>',
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            '<div class="cfg-card-body">'
-            f'<div><span class="lbl">Normal (M)</span><span class="val">{_range_str(nm)}</span></div>'
-            f'<div><span class="lbl">Normal (F)</span><span class="val">{_range_str(nf)}</span></div>'
-            f'<div><span class="lbl">Detection</span><span class="val">{_range_str(det)}</span></div>'
-            f'<div><span class="lbl">CLIA</span><span class="val">{_clia_str(clia)}</span></div>'
-            '</div>',
-            unsafe_allow_html=True,
-        )
-        b1, b2 = st.columns(2)
-        if b1.button("✏  Edit", key=f"edit_{sfx}", use_container_width=True):
+        if row[6].button("✏", key=f"cfg_row_edit__{sfx}",
+                         help=f"Edit {name} ({vendor or 'no vendor'})"):
             st.session_state[EDIT_KEY] = (vendor, name)
             st.rerun()
-        # two-click delete: first click arms, second click confirms
-        del_key = f"del_armed_{sfx}"
+
+        # two-click delete: the first click arms this row, the second removes it
+        del_key = f"cfg_row_del_armed__{sfx}"
         armed = st.session_state.get(del_key, False)
-        label = "✓  Confirm delete" if armed else "🗑  Delete"
-        if b2.button(label, key=f"delete_{sfx}", use_container_width=True):
+        if row[7].button("✓" if armed else "🗑", key=f"cfg_row_del__{sfx}",
+                         help=("Click again to delete" if armed
+                               else f"Delete {name} ({vendor or 'no vendor'})")):
             if armed:
                 db.delete_parameter(user["id"], name, vendor)
                 st.session_state.pop(del_key, None)
-                st.success(f"Deleted '{name}'.")
-                st.rerun()
+                if st.session_state.get(EDIT_KEY) == (vendor, name):
+                    st.session_state[EDIT_KEY] = None
+                st.toast(f"Deleted '{name}' for {vendor or 'no vendor'}.")
             else:
                 st.session_state[del_key] = True
-                st.warning(f"Click 'Confirm delete' again to remove '{name}'.")
+            st.rerun()
+        if armed:
+            st.warning(f"Click ✓ again to delete '{name}' for "
+                       f"{vendor or 'no vendor'}.", icon="⚠")
 
 
 # ---------------------------------------------------------------------------
