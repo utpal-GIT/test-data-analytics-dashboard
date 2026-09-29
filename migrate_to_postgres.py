@@ -105,10 +105,12 @@ def main() -> None:
 
             for table, rows_all, cols in (
                 ("samples", samples,
-                 ["parameter", "device_id", "sample_id", "reagent_lot",
-                  "date", "age", "gender", "actual", "abs_value"]),
+                 ["parameter", "vendor", "device_id", "sample_id",
+                  "reagent_lot", "date", "age", "gender", "actual",
+                  "abs_value"]),
                 ("parameters", params,
-                 ["name", "normal_male", "normal_female", "detection", "clia"]),
+                 ["vendor", "name", "normal_male", "normal_female",
+                  "detection", "clia"]),
             ):
                 mine = [r for r in rows_all if r["user_id"] == u["id"]]
                 if not mine:

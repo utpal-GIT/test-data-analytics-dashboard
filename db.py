@@ -21,7 +21,7 @@ every domain row).
 Tables:
   users       - id, username, password (PBKDF2 hash), role
   samples     - per-user patient rows (input + Actual + Abs)
-  parameters  - per-user test-parameter configurations
+  parameters  - per-user test-parameter configurations, one per vendor
   sessions    - login tokens, so a browser refresh keeps you signed in
 """
 
@@ -39,7 +39,8 @@ from urllib.parse import urlsplit, urlunsplit
 import streamlit as st
 from sqlalchemy import (
     CheckConstraint, Column, DateTime, Float, ForeignKey, Index, Integer,
-    MetaData, Table, Text, UniqueConstraint, create_engine, func, text,
+    MetaData, Table, Text, UniqueConstraint, create_engine, func,
+    inspect as sa_inspect, text,
 )
 
 from passwords import hash_password, needs_rehash, verify_password
@@ -67,6 +68,7 @@ samples_t = Table(
     Column("user_id", Integer,
            ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
     Column("parameter", Text),
+    Column("vendor", Text),
     Column("device_id", Text),
     Column("sample_id", Text),
     Column("reagent_lot", Text),
@@ -92,12 +94,16 @@ parameters_t = Table(
     Column("id", Integer, primary_key=True, autoincrement=True),
     Column("user_id", Integer,
            ForeignKey("users.id", ondelete="CASCADE"), nullable=False),
+    Column("vendor", Text, nullable=False, server_default=""),
     Column("name", Text, nullable=False),
     Column("normal_male", Text),      # JSON: {"low":x,"high":y}
     Column("normal_female", Text),    # JSON: {"low":x,"high":y}
     Column("detection", Text),        # JSON: {"low":x,"high":y}
     Column("clia", Text),             # JSON: see clia.py for schema
-    UniqueConstraint("user_id", "name", name="uq_parameters_user_name"),
+    # A configuration belongs to a vendor's version of a parameter, so the
+    # same parameter name can be configured once per reagent vendor.
+    UniqueConstraint("user_id", "vendor", "name",
+                     name="uq_parameters_user_vendor_name"),
 )
 
 
@@ -219,10 +225,66 @@ def ensure_ready() -> bool:
     return True
 
 
+def _migrate_vendor(eng) -> None:
+    """Bring a database made before reagent vendors existed up to date.
+
+    create_all() only creates missing tables, so an existing install needs the
+    vendor columns added and the parameters uniqueness widened from
+    (user, name) to (user, vendor, name) - otherwise two vendors could not
+    hold a configuration for the same parameter. Rows already there are
+    treated as having no vendor recorded.
+    """
+    insp = sa_inspect(eng)
+    if not insp.has_table("parameters"):
+        return          # fresh database: create_all already made this shape
+
+    if "vendor" not in {c["name"] for c in insp.get_columns("samples")}:
+        with eng.begin() as c:
+            c.execute(text("ALTER TABLE samples ADD COLUMN vendor TEXT"))
+
+    if "vendor" in {c["name"] for c in insp.get_columns("parameters")}:
+        return
+
+    if eng.dialect.name == "sqlite":
+        # SQLite cannot drop the old inline UNIQUE(user_id, name), so the
+        # table is rebuilt in the new shape and the rows copied across.
+        with eng.begin() as c:
+            c.exec_driver_sql("PRAGMA foreign_keys = OFF")
+            c.execute(text("""
+                CREATE TABLE parameters_new (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL
+                        REFERENCES users(id) ON DELETE CASCADE,
+                    vendor TEXT NOT NULL DEFAULT '',
+                    name TEXT NOT NULL,
+                    normal_male TEXT, normal_female TEXT,
+                    detection TEXT, clia TEXT,
+                    UNIQUE(user_id, vendor, name))"""))
+            c.execute(text("""
+                INSERT INTO parameters_new
+                    (id, user_id, vendor, name, normal_male, normal_female,
+                     detection, clia)
+                SELECT id, user_id, '', name, normal_male, normal_female,
+                       detection, clia FROM parameters"""))
+            c.execute(text("DROP TABLE parameters"))
+            c.execute(text("ALTER TABLE parameters_new RENAME TO parameters"))
+            c.exec_driver_sql("PRAGMA foreign_keys = ON")
+    else:
+        with eng.begin() as c:
+            c.execute(text("ALTER TABLE parameters "
+                           "ADD COLUMN vendor TEXT NOT NULL DEFAULT ''"))
+            c.execute(text("ALTER TABLE parameters DROP CONSTRAINT IF EXISTS "
+                           "uq_parameters_user_name"))
+            c.execute(text("ALTER TABLE parameters ADD CONSTRAINT "
+                           "uq_parameters_user_vendor_name "
+                           "UNIQUE (user_id, vendor, name)"))
+
+
 def init_db(engine=None) -> None:
     """Create tables when missing and sync users from st.secrets."""
     eng = engine or get_engine()
     metadata.create_all(eng, checkfirst=True)
+    _migrate_vendor(eng)
 
     # Sync users from st.secrets on every startup. This keeps logins working
     # on hosts whose filesystem is ephemeral, and is how the first admin is
@@ -370,6 +432,7 @@ def _sample_payload(user_id: int, parameter: str | None, r: dict) -> dict:
     return {
         "user_id": user_id,
         "parameter": parameter,
+        "vendor": _clean(r.get("vendor")),
         "device_id": r.get("device_id"),
         "sample_id": r.get("sample_id"),
         "reagent_lot": r.get("reagent_lot"),
@@ -421,7 +484,8 @@ def replace_all_samples(user_id: int, rows: Iterable[dict]) -> None:
 def list_parameters(user_id: int) -> list[dict]:
     with read_conn() as c:
         rows = _rows(c.execute(
-            text("SELECT * FROM parameters WHERE user_id = :u ORDER BY name"),
+            text("SELECT * FROM parameters WHERE user_id = :u "
+                 "ORDER BY vendor, name"),
             {"u": user_id}))
     return [_decode_param(r) for r in rows]
 
@@ -441,11 +505,12 @@ def _invalidate_parameters() -> None:
         pass
 
 
-def get_parameter(user_id: int, name: str) -> dict | None:
+def get_parameter(user_id: int, name: str, vendor: str = "") -> dict | None:
     with read_conn() as c:
         row = c.execute(
-            text("SELECT * FROM parameters WHERE user_id = :u AND name = :n"),
-            {"u": user_id, "n": name},
+            text("SELECT * FROM parameters "
+                 "WHERE user_id = :u AND vendor = :v AND name = :n"),
+            {"u": user_id, "v": _clean(vendor) or "", "n": name},
         ).mappings().first()
     return _decode_param(dict(row)) if row else None
 
@@ -456,16 +521,17 @@ def upsert_parameter(user_id: int, cfg: dict) -> None:
     with get_conn() as c:
         c.execute(
             text("""INSERT INTO parameters
-                      (user_id, name, normal_male, normal_female,
+                      (user_id, vendor, name, normal_male, normal_female,
                        detection, clia)
-                    VALUES (:u, :n, :nm, :nf, :det, :clia)
-                    ON CONFLICT (user_id, name) DO UPDATE SET
+                    VALUES (:u, :v, :n, :nm, :nf, :det, :clia)
+                    ON CONFLICT (user_id, vendor, name) DO UPDATE SET
                       normal_male   = excluded.normal_male,
                       normal_female = excluded.normal_female,
                       detection     = excluded.detection,
                       clia          = excluded.clia"""),
             {
                 "u": user_id,
+                "v": _clean(cfg.get("vendor")) or "",
                 "n": cfg["name"],
                 "nm": json.dumps(cfg.get("normal_male") or {}),
                 "nf": json.dumps(cfg.get("normal_female") or {}),
@@ -476,11 +542,12 @@ def upsert_parameter(user_id: int, cfg: dict) -> None:
     _invalidate_parameters()
 
 
-def delete_parameter(user_id: int, name: str) -> None:
+def delete_parameter(user_id: int, name: str, vendor: str = "") -> None:
     with get_conn() as c:
         c.execute(
-            text("DELETE FROM parameters WHERE user_id = :u AND name = :n"),
-            {"u": user_id, "n": name},
+            text("DELETE FROM parameters "
+                 "WHERE user_id = :u AND vendor = :v AND name = :n"),
+            {"u": user_id, "v": _clean(vendor) or "", "n": name},
         )
     _invalidate_parameters()
 
@@ -488,6 +555,14 @@ def delete_parameter(user_id: int, name: str) -> None:
 # ---------------------------------------------------------------------------
 # helpers
 # ---------------------------------------------------------------------------
+def _clean(v: Any) -> str | None:
+    """Trim a text field; blank becomes None (vendor "not recorded")."""
+    if v is None:
+        return None
+    s = str(v).strip()
+    return s or None
+
+
 def _to_float(v: Any) -> float | None:
     if v is None or v == "":
         return None
@@ -498,6 +573,7 @@ def _to_float(v: Any) -> float | None:
 
 
 def _decode_param(row: dict) -> dict:
+    row["vendor"] = (row.get("vendor") or "").strip()
     for k in ("normal_male", "normal_female", "detection", "clia"):
         try:
             row[k] = json.loads(row.get(k) or "{}")

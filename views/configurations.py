@@ -33,10 +33,21 @@ CLIA_MODES = {
 }
 
 # session-state key holds the current edit target:
-#   None       -> nothing being edited (cards-only view)
-#   ""         -> creating a new parameter
-#   "Albumin"  -> editing the parameter named Albumin
+#   None                     -> nothing being edited (cards-only view)
+#   ""                       -> creating a new parameter
+#   ("Vendor A", "Albumin")  -> editing that vendor's Albumin configuration
 EDIT_KEY = "cfg_edit_target"
+
+
+def _key_of(p: dict) -> tuple[str, str]:
+    """A configuration is identified by its vendor and parameter name."""
+    return ((p.get("vendor") or "").strip(), p.get("name") or "")
+
+
+def _slug(*parts) -> str:
+    """Widget-key fragment: two vendors can hold the same parameter name."""
+    return "__".join(
+        "".join(ch if ch.isalnum() else "-" for ch in str(x)) for x in parts)
 
 
 # ---------------------------------------------------------------------------
@@ -160,7 +171,9 @@ def render() -> None:
 
     # Filter cards by search
     filt = (query or "").strip().lower()
-    visible = [p for p in params if not filt or filt in p["name"].lower()]
+    visible = [p for p in params
+               if not filt or filt in p["name"].lower()
+               or filt in (p.get("vendor") or "").lower()]
 
     _render_parameter_cards(user, visible, params)
 
@@ -206,6 +219,8 @@ def _render_parameter_cards(
 def _render_card(user: dict, p: dict) -> None:
     """Render a single parameter card with Edit / Delete buttons."""
     name = p["name"]
+    vendor = (p.get("vendor") or "").strip()
+    sfx = _slug(vendor, name)
     nm = p.get("normal_male") or {}
     nf = p.get("normal_female") or {}
     det = p.get("detection") or {}
@@ -213,7 +228,8 @@ def _render_card(user: dict, p: dict) -> None:
 
     with st.container(border=True):
         st.markdown(
-            f'<div class="cfg-card-name">{name}</div>',
+            f'<div class="cfg-card-name">{name}</div>'
+            f'<div class="cfg-card-vendor">{vendor or "no vendor"}</div>',
             unsafe_allow_html=True,
         )
         st.markdown(
@@ -226,16 +242,16 @@ def _render_card(user: dict, p: dict) -> None:
             unsafe_allow_html=True,
         )
         b1, b2 = st.columns(2)
-        if b1.button("✏  Edit", key=f"edit_{name}", use_container_width=True):
-            st.session_state[EDIT_KEY] = name
+        if b1.button("✏  Edit", key=f"edit_{sfx}", use_container_width=True):
+            st.session_state[EDIT_KEY] = (vendor, name)
             st.rerun()
         # two-click delete: first click arms, second click confirms
-        del_key = f"del_armed_{name}"
+        del_key = f"del_armed_{sfx}"
         armed = st.session_state.get(del_key, False)
         label = "✓  Confirm delete" if armed else "🗑  Delete"
-        if b2.button(label, key=f"delete_{name}", use_container_width=True):
+        if b2.button(label, key=f"delete_{sfx}", use_container_width=True):
             if armed:
-                db.delete_parameter(user["id"], name)
+                db.delete_parameter(user["id"], name, vendor)
                 st.session_state.pop(del_key, None)
                 st.success(f"Deleted '{name}'.")
                 st.rerun()
@@ -253,22 +269,33 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
     is_new = (target == "")
     seed: dict = {}
     if not is_new:
-        seed = next((p for p in params if p["name"] == target), {})
+        key = tuple(target) if isinstance(target, (tuple, list)) else ("", target)
+        seed = next((p for p in params if _key_of(p) == key), {})
         if not seed:
             st.session_state[EDIT_KEY] = None
             st.rerun()
 
-    title = "Add new parameter" if is_new else f"Edit · {seed.get('name')}"
+    _seed_vendor = (seed.get("vendor") or "").strip()
+    title = ("Add new parameter" if is_new
+             else f"Edit · {_seed_vendor or 'no vendor'} · {seed.get('name')}")
     style.section(title, "Fill in the ranges and CLIA acceptance rule")
 
     # Use a per-target widget key suffix so switching between rows doesn't
     # carry over typed values from a prior edit session.
-    sfx = "new" if is_new else target
+    sfx = "new" if is_new else _slug(_seed_vendor, seed.get("name"))
 
     with st.container(border=True):
-        name = st.text_input("Parameter name", value=seed.get("name", ""),
-                             placeholder="e.g. Albumin",
-                             key=f"cfg_name__{sfx}")
+        ncol1, ncol2 = st.columns(2)
+        vendor = ncol1.text_input(
+            "Reagent vendor", value=_seed_vendor,
+            placeholder="e.g. Wiz Bio",
+            key=f"cfg_vendor__{sfx}",
+            help="Configurations are per vendor: the same parameter can be "
+                 "configured once for each reagent vendor.",
+        )
+        name = ncol2.text_input("Parameter name", value=seed.get("name", ""),
+                                placeholder="e.g. Albumin",
+                                key=f"cfg_name__{sfx}")
 
         st.markdown("**Reference ranges**")
         rng = st.columns(3)
@@ -404,11 +431,14 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
         if not name.strip():
             st.error("Parameter name is required.")
             return
-        if is_new and any(p["name"] == name.strip() for p in params):
-            st.error(f"A parameter named '{name.strip()}' already exists.")
+        _v = vendor.strip()
+        if is_new and any(_key_of(p) == (_v, name.strip()) for p in params):
+            st.error(f"'{name.strip()}' is already configured for "
+                     f"{_v or 'no vendor'}.")
             return
         cfg = {
             "name": name.strip(),
+            "vendor": _v,
             "normal_male":   _range_dict(nm_low, nm_high),
             "normal_female": _range_dict(nf_low, nf_high),
             "detection":     _range_dict(det_low, det_high),
@@ -421,15 +451,16 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
         if not ok:
             st.error(msg)
             return
-        if not is_new and seed.get("name") and seed["name"] != cfg["name"]:
-            db.delete_parameter(user["id"], seed["name"])
+        if not is_new and seed.get("name") and _key_of(seed) != (_v, cfg["name"]):
+            # renamed or moved to another vendor: drop the old row
+            db.delete_parameter(user["id"], seed["name"], _seed_vendor)
         db.upsert_parameter(user["id"], cfg)
         st.session_state[EDIT_KEY] = None
-        st.success(f"Saved '{cfg['name']}'.")
+        st.success(f"Saved '{cfg['name']}' for {_v or 'no vendor'}.")
         st.rerun()
 
     if delete:
-        db.delete_parameter(user["id"], seed.get("name"))
+        db.delete_parameter(user["id"], seed.get("name"), _seed_vendor)
         st.session_state[EDIT_KEY] = None
         st.success(f"Deleted '{seed.get('name')}'.")
         st.rerun()

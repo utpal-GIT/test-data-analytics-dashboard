@@ -31,7 +31,7 @@ from clia import in_detection_range, tolerance_for, in_normal_range
 
 
 GRID_INPUT_COLS = [
-    "Selected", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
+    "Selected", "Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
     "Date", "Age", "Gender", "Actual", "Abs",
 ]
 GRID_KEY = "all_samples_grid"
@@ -41,7 +41,8 @@ GRID_KEY = "all_samples_grid"
 INITIAL_EMPTY_ROWS = 10
 
 # Columns that decide whether a row carries data at all
-DATA_COLS = ["Parameter", "Device ID", "Sample ID", "Reagent LOT", "Actual", "Abs"]
+DATA_COLS = ["Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
+             "Actual", "Abs"]
 
 # The date filter is one control with two modes.
 DATE_MODE_RANGE = "Range"
@@ -121,6 +122,7 @@ def _lots_slug(lots: list[tuple[str, int]], max_shown: int = 2) -> str:
 def _empty_rows(n: int = INITIAL_EMPTY_ROWS) -> pd.DataFrame:
     df = pd.DataFrame({
         "Selected":    [False] * n,
+        "Vendor":      [""] * n,
         "Parameter":   [""] * n,
         "Device ID":   [""] * n,
         "Sample ID":   [""] * n,
@@ -139,6 +141,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
         return _empty_rows()
     df = pd.DataFrame([{
         "Selected":    False,
+        "Vendor":      r.get("vendor") or "",
         "Parameter":   r.get("parameter") or "",
         "Device ID":   r.get("device_id") or "",
         "Sample ID":   r.get("sample_id") or "",
@@ -156,7 +159,8 @@ def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     if "Selected" not in df.columns:
         df["Selected"] = False
     df["Selected"] = df["Selected"].fillna(False).astype(bool)
-    for c in ("Parameter", "Device ID", "Sample ID", "Reagent LOT", "Gender"):
+    for c in ("Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
+              "Gender"):
         if c not in df.columns:
             df[c] = ""
         df[c] = df[c].fillna("").astype(str)
@@ -174,7 +178,7 @@ def _grid_to_db(df: pd.DataFrame) -> list[dict]:
     out = []
     for _, r in df.iterrows():
         if all(_is_blank(r.get(c)) for c in
-               ("Parameter", "Device ID", "Sample ID", "Reagent LOT",
+               ("Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
                 "Date", "Age", "Gender", "Actual", "Abs")):
             continue
         d = r.get("Date")
@@ -186,6 +190,7 @@ def _grid_to_db(df: pd.DataFrame) -> list[dict]:
             d_str = str(d)
         out.append({
             "parameter":   _strip(r.get("Parameter")),
+            "vendor":      _strip(r.get("Vendor")),
             "device_id":   _strip(r.get("Device ID")),
             "sample_id":   _strip(r.get("Sample ID")),
             "reagent_lot": _strip(r.get("Reagent LOT")),
@@ -267,6 +272,7 @@ def _sort_key(s: pd.Series) -> pd.Series:
 def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame({
         "parameter":   df["Parameter"].astype(str),
+        "vendor":      df["Vendor"].astype(str),
         "device_id":   df["Device ID"],
         "sample_id":   df["Sample ID"],
         "reagent_lot": df["Reagent LOT"],
@@ -282,13 +288,16 @@ def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
 # sidebar filters
 # ---------------------------------------------------------------------------
 FILTER_KEYS = (
-    "flt_param", "flt_device", "flt_sample", "flt_lot", "flt_gender",
+    "flt_vendor", "flt_param", "flt_device", "flt_sample", "flt_lot",
+    "flt_gender",
     "flt_date_mode", "flt_date", "flt_dates", "flt_age", "flt_err_pct_v2", "flt_abs_err_v2",
     "flt_bias_v2", "flt_in_range", "plot_exclude",
 )
 
 
-def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
+def _render_filters(grid_df: pd.DataFrame,
+                    all_pairs: set[tuple[str, str]],
+                    all_vendors: list[str]) -> dict:
     sb = st.sidebar
 
     # Pre-compute option lists (needed by Reset to set explicit defaults)
@@ -323,6 +332,7 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         # Clear every filter to empty (no selections).
         # Explicitly set widget keys so Streamlit's internal widget
         # registry doesn't silently re-inject old values.
+        st.session_state["flt_vendor"] = []
         st.session_state["flt_param"] = []
         st.session_state["flt_device"] = []
         st.session_state["flt_sample"] = []
@@ -350,11 +360,20 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         st.rerun()
 
     # ---- Input-column filters ----
+    # Vendor first: a configuration belongs to a vendor's parameter, so the
+    # parameter list below shows only what the chosen vendors offer.
+    pick_vendor = sb.multiselect(
+        "Vendor", all_vendors, default=all_vendors, key="flt_vendor",
+        help="Reagent vendor. Pick one vendor and one parameter to enable "
+             "metrics, plots and the report export.",
+    )
+    _vendor_scope = set(pick_vendor) if pick_vendor else {v for v, _ in all_pairs}
+    param_options = sorted({n for v, n in all_pairs if v in _vendor_scope})
     pick_param = sb.multiselect(
-        "Parameter", all_known_params, default=all_known_params,
+        "Parameter", param_options, default=param_options,
         key="flt_param",
-        help="Pick a single parameter to enable performance metrics, plots, "
-             "and the report export.",
+        help="Pick a single parameter (with a single vendor) to enable "
+             "performance metrics, plots, and the report export.",
     )
 
     pick_dev = sb.multiselect("Device ID", devices, default=devices, key="flt_device")
@@ -403,6 +422,7 @@ def _render_filters(grid_df: pd.DataFrame, all_known_params: list[str]) -> dict:
         "Exclude Sample IDs from plots", samples, default=[], key="plot_exclude")
 
     return {
+        "vendors": pick_vendor,
         "parameters": pick_param,
         "device": pick_dev, "sample": pick_samp, "lot": pick_lot,
         "gender": pick_gender, "date_range": date_range,
@@ -571,6 +591,9 @@ def _apply_filters(df: pd.DataFrame, f: dict) -> pd.Index:
             return
         mask &= df[col].astype(str).isin([str(x) for x in choices])
 
+    if f.get("vendors"):
+        mask &= df["vendor"].astype(str).str.strip().isin(
+            [str(v) for v in f["vendors"]])
     if f.get("parameters"):
         mask &= df["parameter"].astype(str).isin(f["parameters"])
     _isin("device_id", f["device"])
@@ -608,9 +631,10 @@ def _apply_filters(df: pd.DataFrame, f: dict) -> pd.Index:
 def render() -> None:
     user = auth.current_user()
 
-    # All configured parameters (may be empty)
+    # All configured parameters (may be empty). A configuration belongs to a
+    # vendor's version of a parameter, so it is keyed by (vendor, name).
     configured_params = db.parameters_for(user["id"])   # cached until saved
-    cfg_by_name = {p["name"]: p for p in configured_params}
+    cfg_by_key = {(p.get("vendor", ""), p["name"]): p for p in configured_params}
 
     # Load multi-parameter grid into session
     if GRID_KEY not in st.session_state:
@@ -627,9 +651,14 @@ def render() -> None:
 
     st.session_state[GRID_KEY] = grid_df
 
-    # Auto-detect parameters: configured + any typed in the grid
-    typed = sorted({s for s in grid_df["Parameter"].dropna().astype(str) if s.strip()})
-    all_known = sorted(set(cfg_by_name.keys()) | set(typed))
+    # Auto-detect vendors and parameters: configured + anything typed in the
+    # grid. Parameter options follow the vendors picked in the sidebar.
+    typed_pairs = {(str(v).strip(), str(n).strip())
+                   for v, n in zip(grid_df["Vendor"].astype(str),
+                                   grid_df["Parameter"].astype(str))
+                   if str(n).strip()}
+    all_pairs = set(cfg_by_key.keys()) | typed_pairs
+    all_vendors = sorted({v for v, _ in all_pairs if v})
 
     # Top: model selector
     style.section("Setup",
@@ -644,11 +673,12 @@ def render() -> None:
         st.session_state["plot_exclude"] = st.session_state.pop("_staged_plot_exclude")
 
     # Sidebar filters
-    filters = _render_filters(grid_df, all_known)
+    filters = _render_filters(grid_df, all_pairs, all_vendors)
 
     # --- Filter → Selected sync ---
     # When ANY sidebar filter multiselect changes, auto-select matching rows.
     _filter_fp = (
+        tuple(sorted(str(s) for s in filters.get("vendors", []))),
         tuple(sorted(str(s) for s in filters.get("parameters", []))),
         tuple(sorted(str(s) for s in filters.get("device", []))),
         tuple(sorted(str(s) for s in filters.get("sample", []))),
@@ -710,16 +740,28 @@ def render() -> None:
     selected_idx = full_df.index[selected_mask]
     active_indices = filtered_indices.intersection(selected_idx)
 
+    # A configuration belongs to one vendor's parameter, so analysis needs one
+    # of each. With a single vendor configured for a parameter, picking the
+    # parameter alone is enough - the vendor is implied.
     chosen_params = filters["parameters"] or []
-    single_param_mode = (len(chosen_params) == 1)
+    chosen_vendors = filters.get("vendors") or []
+    _implied = sorted({v for v, n in all_pairs
+                       if len(chosen_params) == 1 and n == chosen_params[0]})
+    if len(chosen_params) == 1 and len(chosen_vendors) != 1 and len(_implied) == 1:
+        chosen_vendors = _implied
+    single_param_mode = (len(chosen_params) == 1 and len(chosen_vendors) == 1)
     chosen_name = chosen_params[0] if single_param_mode else None
-    param_cfg = cfg_by_name.get(chosen_name) if chosen_name else None
+    chosen_vendor = chosen_vendors[0] if single_param_mode else None
+    param_cfg = (cfg_by_key.get((chosen_vendor, chosen_name))
+                 if single_param_mode else None)
     if single_param_mode and param_cfg is None:
-        param_cfg = {"name": chosen_name}
+        param_cfg = {"name": chosen_name, "vendor": chosen_vendor}
 
-    # Restrict the analysis subset to the chosen parameter (if single)
+    # Restrict the analysis subset to the chosen vendor's parameter
     if single_param_mode:
-        param_rows_idx = full_df.index[full_df["parameter"] == chosen_name]
+        param_rows_idx = full_df.index[
+            (full_df["parameter"] == chosen_name)
+            & (full_df["vendor"].astype(str).str.strip() == chosen_vendor)]
         active_for_param = active_indices.intersection(param_rows_idx)
     else:
         active_for_param = pd.Index([], dtype="int64")
@@ -1119,18 +1161,23 @@ def render() -> None:
 
     # ---- Performance summary (only single param) ----
     if single_param_mode:
+        _who = f"{chosen_vendor} · {chosen_name}" if chosen_vendor else chosen_name
         style.section("Performance summary",
                       f"Calibration fit · classification on the configured "
-                      f"normal range · {chosen_name}")
+                      f"normal range · {_who}")
         style.performance_panel(counts, diag, fit)
     else:
         style.section("Performance summary")
-        if not chosen_params:
-            st.info("📌 Select **one parameter** in the sidebar Parameter "
-                    "filter to see metrics, plots, and the report export.")
+        if len(chosen_params) != 1:
+            st.info("📌 Select **one parameter** in the sidebar to see metrics, "
+                    "plots, and the report export."
+                    + (f" You have **{len(chosen_params)}** selected."
+                       if chosen_params else ""))
         else:
-            st.info(f"📌 You have **{len(chosen_params)} parameters** selected. "
-                    "Pick exactly one to enable metrics, plots, and the report export.")
+            st.info(f"📌 **{chosen_name}** is configured for "
+                    f"**{len(_implied)} vendors**. Pick **one vendor** in the "
+                    "sidebar as well — a configuration belongs to a vendor's "
+                    "version of the parameter.")
 
     # ---- Plots (only single param) ----
     if single_param_mode:
@@ -1884,6 +1931,8 @@ def _build_report_pdf(
     elements.append(Paragraph("Test Analytics Report", title_style))
     elements.append(Paragraph(
         f"Parameter: <b>{param_name}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+        f"Vendor: <b>{(param_cfg.get('vendor') or '-')}</b> "
+        f"&nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Reagent LOT: <b>{_lots_label(lots)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Calibration model: <b>{fit.get('name','')}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
@@ -2206,12 +2255,13 @@ def _build_report_pdf(
     elements.append(NextPageTemplate('landscape'))
     elements.append(PageBreak())
     elements.append(Paragraph(f"Data ({len(table_df)} rows)", h2))
-    cols_show = ["sample_id", "device_id", "reagent_lot", "date",
+    cols_show = ["sample_id", "vendor", "device_id", "reagent_lot", "date",
                  "age", "gender", "actual", "abs_value",
                  "Predicted", "Error%", "Abs Error%", "Bias", "Status"]
     cols_show = [c for c in cols_show if c in table_df.columns]
     _col_labels = {
-        "sample_id": "Sample ID", "device_id": "Device ID",
+        "sample_id": "Sample ID", "vendor": "Vendor",
+        "device_id": "Device ID",
         "reagent_lot": "Reagent LOT", "date": "Date",
         "age": "Age", "gender": "Gender", "actual": "Actual",
         "abs_value": "Abs", "Predicted": "Predicted",
@@ -2247,7 +2297,7 @@ def _build_report_pdf(
         rows.append(row)
     _col_w = {
         "S.No": 10,
-        "sample_id": 24, "device_id": 22, "reagent_lot": 22,
+        "sample_id": 22, "vendor": 20, "device_id": 20, "reagent_lot": 20,
         "date": 19, "age": 10, "gender": 14, "actual": 15,
         "abs_value": 15, "Predicted": 18, "Error%": 16,
         "Abs Error%": 16, "Bias": 14, "Status": 24,

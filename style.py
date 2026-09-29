@@ -529,6 +529,10 @@ div[data-testid="stDataEditor"] [role="columnheader"] {{
 /* ===== Configurations cards (v2 — used inside st.container) ===== */
 .cfg-card-name {{
     font-size:1rem; font-weight:700; color:#0F172A;
+}}
+.cfg-card-vendor {{
+    font-size:0.72rem; font-weight:600; color:#64748B;
+    text-transform:uppercase; letter-spacing:0.04em;
     padding-bottom:8px; margin-bottom:8px;
     border-bottom:1px solid #F1F5F9;
 }}
