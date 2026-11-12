@@ -914,6 +914,9 @@ def render() -> None:
                     chosen_name, param_cfg or {}, counts, diag, fit,
                     analysis_df, pb_stats, ba_bias, ba_sd, ba_n,
                     report_table_df, _lots, set(_marked_sids()),
+                    # the report draws Bland-Altman against the same x-axis
+                    # as the plot on screen
+                    st.session_state.get("chart3_xmode", BA_X_MEAN),
                 )
                 _parts = ["report"]
                 _vendor_part = _safe_filename_part(chosen_vendor or "")
@@ -1216,6 +1219,10 @@ VIEW_ALL = "All three"
 VIEW_CAL = "Expand · Concentration vs Absorbance"
 VIEW_PB = "Expand · Passing-Bablok"
 VIEW_BA = "Expand · Bland-Altman"
+
+# What the Bland-Altman x-axis is plotted against
+BA_X_MEAN = "Mean of Actual & Predicted"
+BA_X_ACTUAL = "Actual"
 EXPANDED_HEIGHT = 760
 
 
@@ -1549,7 +1556,17 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
         with cc3:
             st.markdown("**Bland-Altman**")
             title3 = st.text_input("Title", value="Bland-Altman", key="chart3_title")
-            x3lbl = st.text_input("X-axis", value="Mean of Actual & Predicted", key="chart3_x")
+            ba_x_mode = st.radio(
+                "X-axis values", [BA_X_MEAN, BA_X_ACTUAL], key="chart3_xmode",
+                help="Plot the differences against the mean of the two "
+                     "methods (classic Bland-Altman) or against the Actual "
+                     "(reference) value.",
+            )
+            # Each choice keeps its own label, so switching does not leave
+            # "Mean of Actual & Predicted" sitting under an Actual axis.
+            x3lbl = st.text_input(
+                "X-axis", value=ba_x_mode,
+                key="chart3_x" if ba_x_mode == BA_X_MEAN else "chart3_x_actual")
             y3lbl = st.text_input("Y-axis", value="Predicted − Actual", key="chart3_y")
             inv3 = st.checkbox("Invert axes", key="chart3_inv")
 
@@ -1677,7 +1694,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     ok3 = np.isfinite(actual) & np.isfinite(pred)
     means = (actual[ok3] + pred[ok3]) / 2.0
     diffs = pred[ok3] - actual[ok3]
-    p3x, p3y = (diffs, means) if inv3 else (means, diffs)
+    ba_x = actual[ok3] if ba_x_mode == BA_X_ACTUAL else means
+    p3x, p3y = (diffs, ba_x) if inv3 else (ba_x, diffs)
     lbl3x, lbl3y = (y3lbl, x3lbl) if inv3 else (x3lbl, y3lbl)
     _grp3 = _groups[ok3] if _groups is not None else None
     fig3 = go.Figure()
@@ -1695,8 +1713,10 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
         loa_hi = bias + 1.96 * sd
         loa_lo = bias - 1.96 * sd
         if inv3:
-            d_lo = float(np.min(diffs)) if len(diffs) else 0
-            d_hi = float(np.max(diffs)) if len(diffs) else 1
+            # Inverted: the reference lines run vertically, so they must span
+            # the axis the Bland-Altman x-values now sit on.
+            d_lo = float(np.min(ba_x)) if len(ba_x) else 0
+            d_hi = float(np.max(ba_x)) if len(ba_x) else 1
             if d_lo == d_hi: d_hi = d_lo + 1
             for y_val, lbl, color in [
                 (bias, f"Bias {bias:.3f}", style.PALETTE["success"]),
@@ -1708,8 +1728,8 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                     name=lbl, line=dict(color=color, dash="dash", width=2),
                 ))
         else:
-            x_lo = float(np.min(means)) if len(means) else 0
-            x_hi = float(np.max(means)) if len(means) else 1
+            x_lo = float(np.min(ba_x)) if len(ba_x) else 0
+            x_hi = float(np.max(ba_x)) if len(ba_x) else 1
             if x_lo == x_hi: x_hi = x_lo + 1
             for y_val, lbl, color in [
                 (bias, f"Bias {bias:.3f}", style.PALETTE["success"]),
@@ -1841,6 +1861,7 @@ def _build_report_pdf(
     report_table_df: pd.DataFrame | None = None,
     lots: list[tuple[str, int]] | None = None,
     marked: set[str] | None = None,
+    ba_x_mode: str = BA_X_MEAN,
 ) -> bytes:
     """Build a multi-page PDF report and return the binary content."""
     from reportlab.lib.pagesizes import A4, landscape
@@ -2211,23 +2232,22 @@ def _build_report_pdf(
     if ok2.any():
         means = (actual[ok2] + pred[ok2]) / 2.0
         diffs = pred[ok2] - actual[ok2]
-        _scatter_status(ax3, means, diffs,
-                        np.ones(len(means), dtype=bool),
+        ba_x = actual[ok2] if ba_x_mode == BA_X_ACTUAL else means
+        _scatter_status(ax3, ba_x, diffs,
+                        np.ones(len(ba_x), dtype=bool),
                         _cat[ok2], _sids[ok2])
         if len(diffs):
             bias = float(np.mean(diffs))
             sd = float(np.std(diffs, ddof=1)) if len(diffs) > 1 else 0.0
             loa_hi = bias + 1.96 * sd
             loa_lo = bias - 1.96 * sd
-            x_lo, x_hi = float(np.min(means)), float(np.max(means))
-            if x_lo == x_hi: x_hi = x_lo + 1
             ax3.axhline(bias, color=CLR_OK, linestyle="--", linewidth=1.5,
                         label=f"Bias {bias:.3f}")
             ax3.axhline(loa_hi, color=CLR_ERR, linestyle="--", linewidth=1.5,
                         label=f"+1.96 SD {loa_hi:.3f}")
             ax3.axhline(loa_lo, color=CLR_ERR, linestyle="--", linewidth=1.5,
                         label=f"-1.96 SD {loa_lo:.3f}")
-    ax3.set_xlabel("Mean of Actual & Predicted")
+    ax3.set_xlabel(ba_x_mode)
     ax3.set_ylabel("Predicted − Actual")
     ax3.grid(True, alpha=0.25)
     _legend_below(ax3)
