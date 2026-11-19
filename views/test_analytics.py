@@ -30,10 +30,19 @@ import style
 from clia import in_detection_range, tolerance_for, in_normal_range
 
 
+# Predicted can be typed in for results that did not come from this app's
+# calibration model; the column only shows when that mode is chosen.
+PRED_IN_COL = "Predicted (entered)"
+
 GRID_INPUT_COLS = [
     "Selected", "Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
-    "Date", "Age", "Gender", "Actual", "Abs",
+    "Date", "Age", "Gender", "Actual", "Abs", PRED_IN_COL,
 ]
+
+# Where the Predicted values come from
+PRED_MODEL = "Calibrate from Abs"
+PRED_DIRECT = "Use entered Predicted"
+DIRECT_FIT_NAME = "Entered Predicted"
 GRID_KEY = "all_samples_grid"
 
 # Blank rows kept in the grid while it holds no data, so there is always
@@ -42,7 +51,7 @@ INITIAL_EMPTY_ROWS = 10
 
 # Columns that decide whether a row carries data at all
 DATA_COLS = ["Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
-             "Actual", "Abs"]
+             "Actual", "Abs", PRED_IN_COL]
 
 # The date filter is one control with two modes.
 DATE_MODE_RANGE = "Range"
@@ -132,6 +141,7 @@ def _empty_rows(n: int = INITIAL_EMPTY_ROWS) -> pd.DataFrame:
         "Gender":      [""] * n,
         "Actual":      pd.Series([np.nan] * n, dtype="float64"),
         "Abs":         pd.Series([np.nan] * n, dtype="float64"),
+        PRED_IN_COL:   pd.Series([np.nan] * n, dtype="float64"),
     })
     return _coerce_dtypes(df)
 
@@ -151,6 +161,7 @@ def _db_to_grid(rows: list[dict]) -> pd.DataFrame:
         "Gender":      r.get("gender") or "",
         "Actual":      r.get("actual"),
         "Abs":         r.get("abs_value"),
+        PRED_IN_COL:   r.get("predicted"),
     } for r in rows])
     return _coerce_dtypes(df)
 
@@ -167,7 +178,7 @@ def _coerce_dtypes(df: pd.DataFrame) -> pd.DataFrame:
     if "Date" not in df.columns:
         df["Date"] = pd.NaT
     df["Date"] = pd.to_datetime(df["Date"], errors="coerce").astype("datetime64[ns]")
-    for c in ("Age", "Actual", "Abs"):
+    for c in ("Age", "Actual", "Abs", PRED_IN_COL):
         if c not in df.columns:
             df[c] = np.nan
         df[c] = pd.to_numeric(df[c], errors="coerce")
@@ -179,7 +190,7 @@ def _grid_to_db(df: pd.DataFrame) -> list[dict]:
     for _, r in df.iterrows():
         if all(_is_blank(r.get(c)) for c in
                ("Vendor", "Parameter", "Device ID", "Sample ID", "Reagent LOT",
-                "Date", "Age", "Gender", "Actual", "Abs")):
+                "Date", "Age", "Gender", "Actual", "Abs", PRED_IN_COL)):
             continue
         d = r.get("Date")
         if isinstance(d, (datetime, pd.Timestamp, date)):
@@ -199,6 +210,7 @@ def _grid_to_db(df: pd.DataFrame) -> list[dict]:
             "gender":      _strip(r.get("Gender")),
             "actual":      _num(r.get("Actual")),
             "abs_value":   _num(r.get("Abs")),
+            "predicted":   _num(r.get(PRED_IN_COL)),
         })
     return out
 
@@ -256,6 +268,34 @@ def _data_row_mask(df: pd.DataFrame) -> pd.Series:
     return ~df[DATA_COLS].apply(lambda r: all(_is_blank(v) for v in r), axis=1)
 
 
+def _hidden_pred_col(direct: bool) -> str:
+    """The Predicted column that is NOT in use: the calculated one while
+    Predicted is entered by hand, the entered one while calibrating."""
+    return "Predicted" if direct else PRED_IN_COL
+
+
+def _direct_fit(rows: pd.DataFrame) -> dict:
+    """What the rest of the page needs from a "fit" when Predicted was entered
+    by hand: no model, no coefficients, no curve - just how well the entered
+    values agree with Actual, so the summary card still has something to say."""
+    a = pd.to_numeric(rows.get("actual"), errors="coerce").to_numpy(dtype=float)
+    p = pd.to_numeric(rows.get("predicted_in"), errors="coerce").to_numpy(dtype=float)
+    ok = np.isfinite(a) & np.isfinite(p)
+    has = bool(ok.any())
+    return {
+        "name": DIRECT_FIT_NAME,
+        "direct": True,
+        "success": has,
+        "coeffs": {},
+        "predict": lambda v: np.full_like(np.asarray(v, dtype=float), np.nan),
+        "metrics": models.agreement_metrics(a[ok], p[ok]),
+        "curve": (np.array([]), np.array([])),
+        "message": "" if has else (
+            "No row has both Actual and Predicted (entered). Fill them in "
+            "the data entry table."),
+    }
+
+
 def _sort_key(s: pd.Series) -> pd.Series:
     """Sort key for the grid: numeric where the column holds numbers, plain
     text otherwise. Sorting a purely textual object column (Class, Gender)
@@ -281,6 +321,7 @@ def _grid_to_dataframe_for_metrics(df: pd.DataFrame) -> pd.DataFrame:
         "gender":      df["Gender"].astype(str),
         "actual":      pd.to_numeric(df["Actual"], errors="coerce"),
         "abs_value":   pd.to_numeric(df["Abs"], errors="coerce"),
+        "predicted_in": pd.to_numeric(df[PRED_IN_COL], errors="coerce"),
     })
 
 
@@ -662,11 +703,26 @@ def render() -> None:
 
     # Top: model selector
     style.section("Setup",
-                  "Pick the calibration model · filter to a single parameter "
-                  "in the sidebar to see metrics & plots")
-    model_label = st.selectbox(
-        "Calibration model", models.MODEL_LABELS, key="ta_model"
+                  "Choose where Predicted comes from · filter to a single "
+                  "parameter in the sidebar to see metrics & plots")
+    scol1, scol2 = st.columns([1.3, 2])
+    pred_source = scol1.radio(
+        "Predicted values", [PRED_MODEL, PRED_DIRECT], key="pred_source",
+        help="**Calibrate from Abs**: fit a calibration model and calculate "
+             "Predicted from each row's Abs. **Use entered Predicted**: type "
+             "or paste Predicted yourself, for results from another analyzer "
+             "or method. No model is fitted and Abs is not needed.",
     )
+    direct = pred_source == PRED_DIRECT
+    if direct:
+        model_label = DIRECT_FIT_NAME
+        scol2.caption("Enter **Actual** and **Predicted (entered)** in the "
+                      "data entry table. The calibration model, its plot and "
+                      "the model coefficients are not used in this mode.")
+    else:
+        model_label = scol2.selectbox(
+            "Calibration model", models.MODEL_LABELS, key="ta_model"
+        )
 
     # Apply staged plot-exclude changes (must happen BEFORE the widget renders)
     if "_staged_plot_exclude" in st.session_state:
@@ -767,7 +823,9 @@ def render() -> None:
         active_for_param = pd.Index([], dtype="int64")
 
     # Fit model only when we have a single parameter
-    if single_param_mode:
+    if single_param_mode and direct:
+        fit = _direct_fit(full_df.loc[active_for_param])
+    elif single_param_mode:
         fit = models.fit_model(
             model_label,
             full_df.loc[active_for_param, "abs_value"].to_numpy(),
@@ -779,10 +837,13 @@ def render() -> None:
                                           "MAE": float("nan"), "N": 0},
                "predict": lambda x: np.full_like(np.asarray(x, dtype=float), np.nan),
                "curve": (np.array([]), np.array([])),
-               "message": "Filter to a single parameter to fit a model."}
+               "message": "Filter to a single parameter to fit a model.",
+               "direct": direct}
 
     # Compute row-level metrics for ALL rows; then blank out non-active
-    metrics_df = M.compute_row_metrics(full_df, fit["predict"], param_cfg or {})
+    metrics_df = M.compute_row_metrics(
+        full_df, fit["predict"], param_cfg or {},
+        predicted=full_df["predicted_in"] if direct else None)
 
     # Save ALL selected rows for the parameter (before computed-filter blanking)
     # so the PDF report prints the complete table, not just the filtered subset.
@@ -872,7 +933,8 @@ def render() -> None:
     # system ANSI codepage, which turns any non-ASCII character into mojibake
     # (the status dot came out as "ðŸŸ¢"). The status also goes out as plain
     # words, since the dot is there to be looked at, not to be data.
-    _export = combined.copy()
+    _export = combined.drop(columns=[_hidden_pred_col(direct)],
+                            errors="ignore")
     if "Status" in _export.columns:
         _export["Status"] = _export["Status"].map(_plain_status)
     csv_bytes = _export.to_csv(index=False).encode("utf-8-sig")
@@ -967,7 +1029,8 @@ def render() -> None:
 
     # Sort controls rendered BEFORE action buttons so their widget state
     # is not lost when a button calls st.rerun().
-    sortable_cols = [c for c in combined.columns if c != "Status"]
+    sortable_cols = [c for c in combined.columns
+                     if c not in ("Status", _hidden_pred_col(direct))]
     sc1, sc2, _ = st.columns([2, 2, 5])
     sort_col = sc1.selectbox("Sort by", ["(none)"] + sortable_cols, key="sort_col")
     sort_dir = sc2.selectbox("Order", ["Ascending", "Descending"], key="sort_dir")
@@ -1100,6 +1163,14 @@ def render() -> None:
                  "the row is excluded from the analysis.",
         )
     col_cfg["Date"] = st.column_config.DateColumn("Date", format="YYYY-MM-DD")
+    col_cfg[PRED_IN_COL] = st.column_config.NumberColumn(
+        PRED_IN_COL, format="%.4f",
+        help="Predicted value for this sample, typed or pasted in. Used when "
+             "Setup is on 'Use entered Predicted'.",
+    )
+    # Only one Predicted column is shown: the one typed in, or the one the
+    # calibration model calculates. The other stays in the data, unseen.
+    _shown_cols = [c for c in combined.columns if c != _hidden_pred_col(direct)]
     _n_display = len(combined)
     _visible = min(_n_display + 1, 15)
     grid_height = _visible * 35 + 50
@@ -1111,6 +1182,7 @@ def render() -> None:
             use_container_width=True,
             height=grid_height,
             column_config=col_cfg,
+            column_order=_shown_cols,
             hide_index=True,
         )
     except Exception as _exc:
@@ -1170,7 +1242,8 @@ def render() -> None:
     if single_param_mode:
         _who = f"{chosen_vendor} · {chosen_name}" if chosen_vendor else chosen_name
         style.section("Performance summary",
-                      f"Calibration fit · classification on the configured "
+                      ("Entered Predicted" if direct else "Calibration fit")
+                      + f" · classification on the configured "
                       f"normal range · {_who}")
         style.performance_panel(counts, diag, fit)
     else:
@@ -1215,7 +1288,7 @@ MARK_COLOR = "#7C3AED"
 SEL_NONCE_KEY = "_plot_sel_nonce"
 
 # Plot layout choices ("expand" one plot without leaving the page)
-VIEW_ALL = "All three"
+VIEW_ALL = "All plots"
 VIEW_CAL = "Expand · Concentration vs Absorbance"
 VIEW_PB = "Expand · Passing-Bablok"
 VIEW_BA = "Expand · Bland-Altman"
@@ -1539,14 +1612,20 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     style.analysis_panel(pb_stats, ba_bias, ba_sd, ba_n)
 
     # Collapsible title/axis customizer
+    direct = bool(fit.get("direct"))
     with st.expander("Customize plot titles & axes", expanded=False):
-        cc1, cc2, cc3 = st.columns(3)
-        with cc1:
-            st.markdown("**Abs vs Actual**")
-            title1 = st.text_input("Title", value="Concentration vs Absorbance", key="chart1_title")
-            x1lbl = st.text_input("X-axis", value="Concentration", key="chart1_x")
-            y1lbl = st.text_input("Y-axis", value="Absorbance", key="chart1_y")
-            inv1 = st.checkbox("Invert axes", key="chart1_inv")
+        if direct:
+            # entered Predicted: there is no calibration plot to customise
+            cc2, cc3 = st.columns(2)
+            title1, x1lbl, y1lbl, inv1 = "", "", "", False
+        else:
+            cc1, cc2, cc3 = st.columns(3)
+            with cc1:
+                st.markdown("**Abs vs Actual**")
+                title1 = st.text_input("Title", value="Concentration vs Absorbance", key="chart1_title")
+                x1lbl = st.text_input("X-axis", value="Concentration", key="chart1_x")
+                y1lbl = st.text_input("Y-axis", value="Absorbance", key="chart1_y")
+                inv1 = st.checkbox("Invert axes", key="chart1_inv")
         with cc2:
             st.markdown("**Passing-Bablok**")
             title2 = st.text_input("Title", value="Passing-Bablok", key="chart2_title")
@@ -1623,9 +1702,13 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
     # out of fullscreen the moment a mark is added (marking changes the figure,
     # which Streamlit treats as a new element) and its overlay hides the
     # toolbar, so this in-app expand is the way to mark on a large plot.
+    _views = ([VIEW_ALL, VIEW_PB, VIEW_BA] if direct
+              else [VIEW_ALL, VIEW_CAL, VIEW_PB, VIEW_BA])
+    if st.session_state.get("plot_view") not in _views:
+        st.session_state["plot_view"] = VIEW_ALL   # e.g. was on the calibration plot
     view = st.radio(
         "View",
-        [VIEW_ALL, VIEW_CAL, VIEW_PB, VIEW_BA],
+        _views,
         horizontal=True, key="plot_view",
         help="Expanding a plot keeps the marking toolbar on screen, unlike "
              "the chart's own fullscreen button.",
@@ -1746,7 +1829,12 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                            height=_chart_height(view, VIEW_BA, normal=500)))
 
     # ---- place the charts: all three, or one expanded to full width ----
-    if view == VIEW_ALL:
+    if view == VIEW_ALL and direct:
+        # no calibration plot: the two method-comparison plots side by side
+        pc1, pc2 = st.columns(2)
+        _plot_chart(pc1, fig2, "chart2")
+        _plot_chart(pc2, fig3, "chart3")
+    elif view == VIEW_ALL:
         pc1, pc2 = st.columns(2)
         _plot_chart(pc1, fig1, "chart1")
         _plot_chart(pc2, fig2, "chart2")
@@ -1959,8 +2047,10 @@ def _build_report_pdf(
         f"Vendor: <b>{(param_cfg.get('vendor') or '-')}</b> "
         f"&nbsp;&nbsp;|&nbsp;&nbsp; "
         f"Reagent LOT: <b>{_lots_label(lots)}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Calibration model: <b>{fit.get('name','')}</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
-        f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+        + ("Predicted: <b>entered directly</b> &nbsp;&nbsp;|&nbsp;&nbsp; "
+           if fit.get("direct") else
+           f"Calibration model: <b>{fit.get('name','')}</b> &nbsp;&nbsp;|&nbsp;&nbsp; ")
+        + f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')}",
         meta))
     elements.append(Spacer(1, 6 * mm))
 
@@ -2037,8 +2127,16 @@ def _build_report_pdf(
         diag_tbl.setStyle(table_style)
         elements.append(diag_tbl)
 
-    # ---- Calibration model fit ----
-    elements.append(Paragraph("Calibration model fit", h2))
+    # ---- Calibration model fit (or, for entered Predicted, agreement) ----
+    _direct = bool(fit.get("direct"))
+    elements.append(Paragraph(
+        "Entered Predicted vs Actual" if _direct else "Calibration model fit",
+        h2))
+    if _direct:
+        elements.append(Paragraph(
+            "Predicted values were entered directly rather than calculated "
+            "by a calibration model, so there are no model coefficients.",
+            body))
     coeffs = fit.get("coeffs") or {}
     if coeffs:
         coeff_rows = [[k, _fmt_coeff(v)] for k, v in coeffs.items()]
@@ -2060,9 +2158,11 @@ def _build_report_pdf(
     coeff_tbl.setStyle(table_style)
     # Heading and table stay on one page: a 5PL table is tall enough to split
     # across the page break and strand a single row under no heading.
-    elements.append(KeepTogether([Paragraph("Coefficients", h3), coeff_tbl]))
+    if not _direct:
+        elements.append(KeepTogether([Paragraph("Coefficients", h3), coeff_tbl]))
 
-    elements.append(Paragraph("Goodness of fit", h3))
+    elements.append(Paragraph(
+        "Agreement with Actual" if _direct else "Goodness of fit", h3))
     m = fit.get("metrics") or {}
     gof_tbl = Table([
         ["R-squared", _fmt(m.get("R2"))],
@@ -2196,18 +2296,19 @@ def _build_report_pdf(
                   loc="upper center", bbox_to_anchor=(0.5, -0.16),
                   ncol=min(4, len(handles)))
 
-    # Plot 1 — Abs vs Actual
-    ok = np.isfinite(actual) & np.isfinite(abs_v)
-    fig1, ax1 = plt.subplots(figsize=(9, 4.2))
-    if fit.get("success") and len(fit.get("curve", (None, None))[0]):
-        gabs, gact = fit["curve"]
-        ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2,
-                 label=f"{fit['name']} fit", zorder=2)
-    _scatter_status(ax1, actual, abs_v, ok, _cat, _sids)
-    ax1.set_xlabel("Concentration"); ax1.set_ylabel("Absorbance")
-    ax1.grid(True, alpha=0.25)
-    _legend_below(ax1)
-    _mpl_to_image(fig1, "Concentration vs Absorbance (with fitted calibration curve)")
+    # Plot 1 — Abs vs Actual (only when a calibration model produced Predicted)
+    if not fit.get("direct"):
+        ok = np.isfinite(actual) & np.isfinite(abs_v)
+        fig1, ax1 = plt.subplots(figsize=(9, 4.2))
+        if fit.get("success") and len(fit.get("curve", (None, None))[0]):
+            gabs, gact = fit["curve"]
+            ax1.plot(gact, gabs, color=CLR_ACC, linewidth=2,
+                     label=f"{fit['name']} fit", zorder=2)
+        _scatter_status(ax1, actual, abs_v, ok, _cat, _sids)
+        ax1.set_xlabel("Concentration"); ax1.set_ylabel("Absorbance")
+        ax1.grid(True, alpha=0.25)
+        _legend_below(ax1)
+        _mpl_to_image(fig1, "Concentration vs Absorbance (with fitted calibration curve)")
 
     # Plot 2 — Passing-Bablok
     ok2 = np.isfinite(actual) & np.isfinite(pred)

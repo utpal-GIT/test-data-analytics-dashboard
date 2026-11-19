@@ -107,7 +107,7 @@ def main() -> None:
                 ("samples", samples,
                  ["parameter", "vendor", "device_id", "sample_id",
                   "reagent_lot", "date", "age", "gender", "actual",
-                  "abs_value"]),
+                  "abs_value", "predicted"]),
                 ("parameters", params,
                  ["vendor", "name", "normal_male", "normal_female",
                   "detection", "clia"]),

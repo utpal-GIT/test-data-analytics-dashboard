@@ -45,6 +45,13 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     return {"R2": float(r2), "RMSE": rmse, "MAE": mae, "N": n}
 
 
+def agreement_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
+    """R², RMSE, MAE and N of y_pred against y_true - the same figures a fit
+    reports, for Predicted values that came from somewhere else."""
+    return _metrics(np.asarray(y_true, dtype=float),
+                    np.asarray(y_pred, dtype=float))
+
+
 def _curve(predict: Callable, x: np.ndarray, n: int = 200):
     if len(x) == 0:
         return np.array([]), np.array([])

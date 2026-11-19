@@ -919,17 +919,21 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
         except (TypeError, ValueError):
             r2_pct = 0; r2_color = "#CBD5E1"; r2_rating = "n/a"; r2_str = "—"
 
+        _direct = bool(fit.get("direct"))
+        if _direct:
+            # Predicted typed in: nothing was fitted, so describe agreement.
+            equation = "No calibration model · Predicted used as entered"
         model = f"""
         <div class="model-card">
           <div class="model-col">
-            <div class="model-eyebrow">Calibration model</div>
-            <div class="model-title">{fit['name']}</div>
+            <div class="model-eyebrow">{"Predicted values" if _direct else "Calibration model"}</div>
+            <div class="model-title">{"Entered directly" if _direct else fit['name']}</div>
             <div class="model-equation">{equation}</div>
             {coef_chips}
             {abs_range_note}
           </div>
           <div class="model-col">
-            <div class="model-eyebrow">R² · variance explained</div>
+            <div class="model-eyebrow">{"R² · agreement with Actual" if _direct else "R² · variance explained"}</div>
             <div class="model-r2-big">{r2_str}</div>
             <div class="model-r2-bar">
               <div class="model-r2-fill" style="width:{r2_pct}%;background:{r2_color}"></div>
@@ -937,7 +941,7 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
             <div class="model-r2-rating">{r2_rating}</div>
           </div>
           <div class="model-col">
-            <div class="model-eyebrow">Goodness of fit</div>
+            <div class="model-eyebrow">{"Agreement with Actual" if _direct else "Goodness of fit"}</div>
             <div class="model-stats">
               <div class="stat"><div class="stat-label">RMSE</div><div class="stat-val">{_fmt_v(m["RMSE"])}</div></div>
               <div class="stat"><div class="stat-label">MAE</div><div class="stat-val">{_fmt_v(m["MAE"])}</div></div>
@@ -947,12 +951,13 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
         </div>
         """
     else:
+        _direct = bool(fit.get("direct"))
         model = f"""
         <div class="model-card">
           <div class="model-col">
-            <div class="model-eyebrow">Calibration model</div>
-            <div class="model-title">{fit.get('name','Model')}</div>
-            <div class="model-equation" style="background:#FEE2E2;border-color:#FECACA;color:#B91C1C">Could not fit</div>
+            <div class="model-eyebrow">{"Predicted values" if _direct else "Calibration model"}</div>
+            <div class="model-title">{"Entered directly" if _direct else fit.get('name','Model')}</div>
+            <div class="model-equation" style="background:#FEE2E2;border-color:#FECACA;color:#B91C1C">{"No data" if _direct else "Could not fit"}</div>
           </div>
           <div class="model-col" style="grid-column: span 2;">
             <div class="model-eyebrow">Reason</div>

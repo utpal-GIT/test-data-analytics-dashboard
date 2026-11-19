@@ -32,9 +32,13 @@ from clia import (
 # ---------------------------------------------------------------------------
 def compute_row_metrics(
     df: pd.DataFrame,
-    predict: Callable[[np.ndarray], np.ndarray],
+    predict: Callable[[np.ndarray], np.ndarray] | None,
     param_cfg: dict | None,
+    predicted=None,
 ) -> pd.DataFrame:
+    """Per-row metrics. Predicted comes from `predict(abs)` - the calibration
+    model - unless `predicted` is given, in which case those values are used
+    as they are (results that were not produced by this app's model)."""
     out = df.copy()
     if "abs_value" not in out.columns:
         out["abs_value"] = np.nan
@@ -46,9 +50,13 @@ def compute_row_metrics(
     abs_arr = pd.to_numeric(out["abs_value"], errors="coerce").to_numpy(dtype=float)
     actual_arr = pd.to_numeric(out["actual"], errors="coerce").to_numpy(dtype=float)
 
-    with np.errstate(invalid="ignore"):
-        pred_arr = predict(abs_arr)
-    pred_arr = np.where(np.isfinite(abs_arr), pred_arr, np.nan)
+    if predicted is not None:
+        pred_arr = pd.to_numeric(pd.Series(predicted, index=out.index),
+                                 errors="coerce").to_numpy(dtype=float)
+    else:
+        with np.errstate(invalid="ignore"):
+            pred_arr = predict(abs_arr)
+        pred_arr = np.where(np.isfinite(abs_arr), pred_arr, np.nan)
 
     out["Predicted"] = pred_arr
 

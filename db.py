@@ -77,6 +77,9 @@ samples_t = Table(
     Column("gender", Text),
     Column("actual", Float),
     Column("abs_value", Float),
+    # Predicted value entered by hand, for analysing results that were not
+    # produced by this app's calibration model.
+    Column("predicted", Float),
     Column("created_at", DateTime, server_default=func.now()),
     Index("idx_samples_user_param", "user_id", "parameter"),
 )
@@ -280,11 +283,25 @@ def _migrate_vendor(eng) -> None:
                            "UNIQUE (user_id, vendor, name)"))
 
 
+def _migrate_predicted(eng) -> None:
+    """Add samples.predicted to a database made before Predicted could be
+    entered by hand. Existing rows simply have none."""
+    insp = sa_inspect(eng)
+    if not insp.has_table("samples"):
+        return
+    if "predicted" in {c["name"] for c in insp.get_columns("samples")}:
+        return
+    col_type = "REAL" if eng.dialect.name == "sqlite" else "DOUBLE PRECISION"
+    with eng.begin() as c:
+        c.execute(text(f"ALTER TABLE samples ADD COLUMN predicted {col_type}"))
+
+
 def init_db(engine=None) -> None:
     """Create tables when missing and sync users from st.secrets."""
     eng = engine or get_engine()
     metadata.create_all(eng, checkfirst=True)
     _migrate_vendor(eng)
+    _migrate_predicted(eng)
 
     # Sync users from st.secrets on every startup. This keeps logins working
     # on hosts whose filesystem is ephemeral, and is how the first admin is
@@ -441,6 +458,7 @@ def _sample_payload(user_id: int, parameter: str | None, r: dict) -> dict:
         "gender": r.get("gender"),
         "actual": _to_float(r.get("actual")),
         "abs_value": _to_float(r.get("abs_value")),
+        "predicted": _to_float(r.get("predicted")),
     }
 
 
