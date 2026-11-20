@@ -814,7 +814,7 @@ def performance_panel(counts: dict, diag: dict, fit: dict) -> None:
       <div class="perf-hero-card">
         <div class="hero-label">% within CLIA window</div>
         <div class="hero-value">{_fmt_pct_v(pct_clia)}</div>
-        <div class="hero-sub">Predicted vs Actual</div>
+        <div class="hero-sub">{"Predicted vs Actual" if _fmt_pct_v(pct_clia) != "—" else "No CLIA rule configured"}</div>
       </div>
       <div class="perf-hero-card">
         <div class="hero-label">Avg |Error %|</div>

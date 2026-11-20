@@ -1278,7 +1278,23 @@ _CLIA_META = {
     "in_clia":      {"symbol": "circle",  "label": "In CLIA range",     "size": 9},
     "outside_clia": {"symbol": "diamond", "label": "Outside CLIA range", "size": 10},
     "out_det":      {"symbol": "x",       "label": "Out of detection",   "size": 11},
+    # no CLIA rule configured: neither inside nor outside a window
+    "not_eval":     {"symbol": "circle-open", "label": "CLIA not evaluated", "size": 9},
 }
+
+
+def _clia_category(in_range, out_of_det) -> np.ndarray:
+    """Plot category per point. "In CLIA range" needs a rule that passed -
+    a missing verdict (no CLIA rule configured) is "not evaluated", never
+    counted as in range."""
+    od = np.asarray(out_of_det, dtype=bool)
+    verdict = [None if (v is None or (isinstance(v, float) and np.isnan(v)))
+               else bool(v) for v in in_range]
+    is_in = np.array([v is True for v in verdict], dtype=bool)
+    is_out = np.array([v is False for v in verdict], dtype=bool)
+    return np.where(od, "out_det",
+                    np.where(is_out, "outside_clia",
+                             np.where(is_in, "in_clia", "not_eval")))
 
 # ---------------------------------------------------------------------------
 # point marking (click a point in any plot; marks are shared by all plots)
@@ -1471,6 +1487,7 @@ def _scatter_traces(x, y, ok_mask, sids, clia_cat, groups=None,
         "in_clia":      style.PALETTE["primary"],
         "outside_clia": style.PALETTE["warning"],
         "out_det":      style.PALETTE["danger"],
+        "not_eval":     style.PALETTE["muted"],
     }
     idx = np.where(ok_mask)[0]
     if len(idx) == 0:
@@ -1667,11 +1684,7 @@ def _render_charts(df: pd.DataFrame, fit: dict, param_cfg: dict,
                         pd.Series([False] * len(df))).fillna(False).to_numpy()
     in_range_raw = df.get("In Range",
                           pd.Series([None] * len(df)))
-    outside_clia = np.array(
-        [(v is False) for v in in_range_raw], dtype=bool) & ~out_of_det
-
-    clia_cat = np.where(out_of_det, "out_det",
-                        np.where(outside_clia, "outside_clia", "in_clia"))
+    clia_cat = _clia_category(in_range_raw.tolist(), out_of_det)
 
     # Colour-by selector (visible only when multiple devices or lots exist)
     _n_devs = len({d for d in devices if d.strip()})
@@ -2075,6 +2088,7 @@ def _build_report_pdf(
         if m == "threshold":
             return (f"+/- {c.get('low_value')} when |TV| <= {c.get('threshold')}, "
                     f"else +/- {c.get('high_percent')} %")
+        if m == "none":       return "No rule (not evaluated)"
         return "-"
 
     elements.append(Paragraph("Parameter configuration", h2))
@@ -2114,7 +2128,10 @@ def _build_report_pdf(
         ["True negative (TN)", str(counts.get("TN", 0))],
         ["False positive (FP)", str(counts.get("FP", 0))],
         ["False negative (FN)", str(counts.get("FN", 0))],
-        ["% within CLIA window", _fmt(counts.get("% within CLIA")) + " %"],
+        ["% within CLIA window",
+         (_fmt(counts.get("% within CLIA")) + " %")
+         if _fmt(counts.get("% within CLIA")) != "-"
+         else "Not evaluated (no CLIA rule)"],
         ["Average |Error %|", _fmt(counts.get("Avg |Error%|"))],
     ], colWidths=[60 * mm, 110 * mm])
     perf_tbl.setStyle(table_style)
@@ -2258,6 +2275,7 @@ def _build_report_pdf(
         ("in_clia",      "In CLIA range",      "o", CLR_PRI,  46),
         ("outside_clia", "Outside CLIA range", "D", CLR_WARN, 44),
         ("out_det",      "Out of detection",   "X", CLR_ERR,  62),
+        ("not_eval",     "CLIA not evaluated", "o", "#94A3B8", 46),
     )
 
     _sids = (analysis_df["sample_id"].astype(str).to_numpy()
@@ -2268,9 +2286,7 @@ def _build_report_pdf(
            else np.zeros(len(analysis_df), dtype=bool))
     _ir = (analysis_df["In Range"].tolist()
            if "In Range" in analysis_df.columns else [None] * len(analysis_df))
-    _outside = np.array([v is False for v in _ir], dtype=bool) & ~_od
-    _cat = np.where(_od, "out_det",
-                    np.where(_outside, "outside_clia", "in_clia"))
+    _cat = _clia_category(_ir, _od)
     _marked = {str(s) for s in (marked or set())}
 
     def _scatter_status(ax, x, y, mask, cat, sids):

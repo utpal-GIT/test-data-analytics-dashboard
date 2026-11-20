@@ -31,6 +31,9 @@ CLIA_MODES = {
     "percent":    "TV +/- percent",
     "greater_of": "TV +/- greater of (value, percent)",
     "threshold":  "Threshold split (value below, percent above)",
+    # For parameters with no CLIA requirement: everything else still runs,
+    # only the in/out-of-window check is skipped.
+    "none":       "No CLIA rule (not evaluated)",
 }
 
 # session-state key holds the current edit target:
@@ -144,6 +147,8 @@ def _clia_str(clia: dict) -> str:
     if mode == "threshold":
         return (f"± {clia.get('low_value')} when |TV| ≤ {clia.get('threshold')}, "
                 f"else ± {clia.get('high_percent')} %")
+    if mode == "none":
+        return "No rule (not evaluated)"
     return "—"
 
 
@@ -336,7 +341,8 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
         seed_clia = seed.get("clia") or {}
         mode_label = st.selectbox(
             "Rule", list(CLIA_MODES.values()),
-            index=_mode_index(seed_clia.get("mode")),
+            index=_mode_index(seed_clia.get("mode")
+                              or (None if is_new else "none")),
             key=f"clia_mode__{sfx}",
         )
         mode_key = _mode_key(mode_label)
@@ -372,6 +378,11 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
             )
             st.caption("Tolerance = max(absolute value, (percent / 100) · |TV|). "
                        "Standard CLIA 2025 pattern.")
+        elif mode_key == "none":
+            st.caption("No acceptance window is applied. Error %, Bias, the "
+                       "TP/TN/FP/FN classification, Passing-Bablok and "
+                       "Bland-Altman all still run; rows are shown as "
+                       "'CLIA not evaluated' and % within CLIA is left blank.")
         elif mode_key == "threshold":
             ct1, ct2, ct3 = st.columns(3)
             clia_threshold = ct1.text_input(
@@ -399,7 +410,15 @@ def _render_edit_panel(user: dict, params: list[dict]) -> None:
         tol = tolerance_for(tv, preview_cfg) if tv is not None else None
         formula = _formula_for(mode_key, preview_cfg, tv)
 
-        if tol is not None and tv is not None:
+        if mode_key == "none":
+            preview_html = (
+                '<div class="cfg-preview ok">'
+                '<span class="lbl">No acceptance window</span>'
+                '<span class="sub">CLIA is not evaluated for this parameter. '
+                'All other analytics still run.</span>'
+                '</div>'
+            )
+        elif tol is not None and tv is not None:
             preview_html = (
                 '<div class="cfg-preview ok">'
                 '<span class="lbl">Acceptance window</span>'

@@ -4,7 +4,7 @@ CLIA acceptance-window evaluation.
 Configuration schema (stored as JSON in parameters.clia):
 
     {
-        "mode": "value" | "percent" | "greater_of" | "threshold",
+        "mode": "value" | "percent" | "greater_of" | "threshold" | "none",
 
         # mode = "value":
         "value":   0.3,           # absolute units, ± around TV
@@ -44,6 +44,8 @@ def tolerance_for(actual: float, cfg: dict | None) -> float | None:
     if not math.isfinite(a):
         return None
     mode = cfg.get("mode")
+    if mode == "none":
+        return None         # no CLIA rule for this parameter: not evaluated
     try:
         if mode == "value":
             return float(cfg["value"])
